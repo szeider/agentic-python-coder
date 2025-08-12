@@ -5,7 +5,9 @@
 [![UV](https://img.shields.io/badge/Packaged%20with-UV-purple)](https://github.com/astral-sh/uv)
 [![LangGraph](https://img.shields.io/badge/Built%20with-LangGraph-green)](https://github.com/langchain-ai/langgraph)
 
-This is a Python coding agent that combines the ReAct (Reason and Act) framework with a persistent IPython kernel to solve programming tasks through iterative development. The system implements ReAct using LangGraph, maintains execution state via IPython for incremental code building, and provides file manipulation and task management tools. Domain-specific knowledge is injected through markdown project prompts rather than code changes, allowing adaptation to new problem areas such as constraint programming or text processing. The implementation spans approximately a few hundred lines of Python code. This architecture demonstrates that effective coding agents can be built with minimal complexity while maintaining practical capabilities for real-world programming tasks.
+This is a Python coding agent that combines the ReAct (Reason and Act) framework with a persistent IPython kernel to solve programming tasks through iterative development. The system implements ReAct using LangGraph, maintains execution state via IPython for incremental code building, and provides file manipulation and task management tools. Domain-specific knowledge is injected through markdown project prompts rather than code changes, allowing adaptation to new problem areas such as constraint programming or text processing. The implementation spans approximately a few hundred lines of Python code. This architecture demonstrates that effective coding agents can be built with minimal complexity while maintaining practical capabilities for real-world programming tasks. 
+
+For more details on the coder and particularly on its application to constraint modelling, see the paper [[Szeider 2025, arxiv-2508.07468]](https://arxiv.org/abs/2508.07468).
 
 ## Installation
 
