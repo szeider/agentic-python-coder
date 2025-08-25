@@ -161,7 +161,9 @@ CLAUDE.md
 **/CLAUDE.md
 TRASH/
 LOCAL/
+ASP/
 CPBENCH/
+PAPER/
 examples/cpmpy/cpmpy_v*.md
 examples/cpmpy/cpmpy.md.backup-*
 

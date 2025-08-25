@@ -1,31 +1,35 @@
 """Command-line interface for the Python coding agent."""
 
+import argparse
+import json
+import os
+import sys
 import warnings
+from pathlib import Path
+from typing import Optional, List, Any, Dict
+
 # Suppress specific warnings that are known and not problematic
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain")
 warnings.filterwarnings("ignore", message=".*PythonREPL.*")
 
-import argparse
-import json
-import sys
-from pathlib import Path
-from typing import Optional, List, Any, Dict
-from datetime import datetime
-
-from coder.agent import create_coding_agent, run_agent
-from coder.project_md import parse_project_file, check_packages_available, create_project_prompt
-from coder.llm import MODEL_STRING
+from coder.agent import create_coding_agent, run_agent  # noqa: E402
+from coder.project_md import (
+    parse_project_file,
+    check_packages_available,
+    create_project_prompt,
+)  # noqa: E402
+from coder.llm import MODEL_STRING  # noqa: E402
 
 
 def display_statistics(stats: Dict[str, Any]):
     """Display execution statistics in a formatted way."""
     if not stats:
         return
-    
+
     print("\n" + "=" * 50)
     print("📊 Execution Statistics")
     print("=" * 50)
-    
+
     # Tool usage
     if stats.get("tool_usage"):
         print("\n🔧 Tool Usage:")
@@ -33,7 +37,7 @@ def display_statistics(stats: Dict[str, Any]):
             print(f"  {tool_name:20} {count:3} calls")
     else:
         print("\n🔧 Tool Usage: No tools were called")
-    
+
     # Token consumption
     token_stats = stats.get("token_consumption", {})
     if any(token_stats.values()):
@@ -43,7 +47,7 @@ def display_statistics(stats: Dict[str, Any]):
         print(f"  Total tokens:        {token_stats.get('total_tokens', 0):,}")
     else:
         print("\n💬 Token Consumption: No token data available")
-    
+
     # Execution time
     exec_time = stats.get("execution_time_seconds", 0)
     if exec_time > 0:
@@ -53,128 +57,172 @@ def display_statistics(stats: Dict[str, Any]):
             print(f"\n⏱️  Execution time: {minutes}m {seconds:.1f}s")
         else:
             print(f"\n⏱️  Execution time: {seconds:.1f}s")
-    
+
     print("=" * 50 + "\n")
 
 
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        description="Coder - AI-powered Python coding assistant",
-        usage="coder [task]"
+        description="Coder - AI-powered Python coding assistant", usage="coder [task]"
     )
-    
+
     parser.add_argument(
-        "task",
+        "task_input",
         nargs="?",
-        help="Task for the coder. If not provided, reads from task.md in current directory"
+        help="Task for the coder (inline task or reads from task.md if not provided)",
     )
-    
+
     parser.add_argument(
-        "--model",
-        help=f"Model to use (default: {MODEL_STRING})"
+        "--task",
+        "-t",
+        dest="task_file",
+        help="Path to task file (creates {basename}_code.py and {basename}.jsonl)",
     )
-    
+
+    parser.add_argument("--model", help=f"Model to use (default: {MODEL_STRING})")
+
     parser.add_argument(
-        "--interactive", "-i",
-        action="store_true",
-        help="Interactive mode"
+        "--interactive", "-i", action="store_true", help="Interactive mode"
     )
-    
+
     parser.add_argument(
-        "--project", "-p",
-        help="Path to project markdown file with examples and available packages"
+        "--project",
+        "-p",
+        help="Path to project markdown file with examples and available packages",
     )
-    
+
     parser.add_argument(
         "--with",
         action="append",
         dest="with_packages",
-        help="Additional packages to include (can be used multiple times, e.g., --with pandas --with numpy)"
+        help="Additional packages to include (can be used multiple times, e.g., --with pandas --with numpy)",
     )
-    
+
+    parser.add_argument(
+        "--dir",
+        "-d",
+        dest="working_dir",
+        help="Working directory for execution (default: current directory)",
+    )
+
+    parser.add_argument(
+        "--api-key",
+        dest="api_key",
+        help="OpenRouter API key (overrides ~/.config/coder/.env)",
+    )
+
     args = parser.parse_args()
-    
+
+    # Set up working directory
+    if args.working_dir:
+        working_dir = Path(args.working_dir).resolve()
+        working_dir.mkdir(parents=True, exist_ok=True)
+        os.chdir(working_dir)
+    else:
+        working_dir = Path.cwd()
+
+    # Determine task handling
+    task_file_path = None
+    task_content = None
+
+    if args.task_file:
+        # --task flag provided: read task from file
+        task_file_path = Path(args.task_file)
+        if not task_file_path.exists():
+            print(f"Error: Task file not found: {args.task_file}")
+            sys.exit(1)
+        task_content = task_file_path.read_text()
+    elif args.task_input:
+        # Positional task: treat as inline task
+        task_content = args.task_input
+
     # Validate package specifications if provided
     if args.with_packages:
         import re
+
         # Basic validation for package specs
         pattern = re.compile(
-            r'^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?'  # Package name
-            r'(\[[a-zA-Z0-9,_-]+\])?'  # Optional extras
-            r'([@=!<>~]+[a-zA-Z0-9.*+!,\-_.]+)?$'  # Optional version spec
+            r"^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?"  # Package name
+            r"(\[[a-zA-Z0-9,_-]+\])?"  # Optional extras
+            r"([@=!<>~]+[a-zA-Z0-9.*+!,\-_.]+)?$"  # Optional version spec
         )
-        
+
         invalid_packages = []
         for pkg in args.with_packages:
             if not pattern.match(pkg):
                 invalid_packages.append(pkg)
-        
+
         if invalid_packages:
-            print(f"❌ Error: Invalid package specifications: {', '.join(invalid_packages)}")
-            print("Expected format: 'package' or 'package>=version' or 'package[extras]'")
+            print(
+                f"❌ Error: Invalid package specifications: {', '.join(invalid_packages)}"
+            )
+            print(
+                "Expected format: 'package' or 'package>=version' or 'package[extras]'"
+            )
             print("\nExamples:")
             print("  --with pandas")
             print("  --with 'numpy>=1.20'")
             print("  --with 'requests[security]'")
             sys.exit(1)
-    
-    # Determine working directory (always current directory)
-    working_dir = Path.cwd()
-    task_path = working_dir / "task.md"
-    
-    # Handle task
-    if args.task:
-        # Write task to file
-        task_path.write_text(args.task)
-        print(f"✅ Created task.md with your task")
-    else:
-        # Check if task.md exists
-        if not task_path.exists():
-            print("Error: No task provided and task.md not found in current directory")
-            print("\nUsage:")
-            print('  coder "your task here"  # Creates task.md and runs')
-            print('  coder                   # Runs with existing task.md')
-            sys.exit(1)
-    
+
+    # Validate task is provided
+    if not task_content:
+        print("Error: No task provided")
+        print("\nUsage:")
+        print('  coder "your task here"     # Inline task')
+        print("  coder --task problem.md    # Task from file")
+        sys.exit(1)
+
     # Load project if specified
     project_prompt = None
     if args.project:
         try:
             # Parse the project file
             packages, content = parse_project_file(args.project)
-            
+
             unavailable = []  # Initialize to empty list
             if packages:
                 print(f"📦 Project packages: {', '.join(packages)}")
-                
+
                 # Check if packages are available
                 unavailable = check_packages_available(packages)
                 if unavailable:
-                    print(f"\n⚠️  Warning: The following packages are not installed:")
+                    print("\n⚠️  Warning: The following packages are not installed:")
                     for pkg in unavailable:
                         print(f"   - {pkg}")
                     print("\nContinuing anyway...\n")
-            
+
             # Create the project prompt
             project_prompt = create_project_prompt(packages, content, unavailable)
             print(f"✅ Loaded project from: {args.project}")
-            
+
         except FileNotFoundError as e:
             print(f"Error: {e}")
             sys.exit(1)
         except Exception as e:
             print(f"Error loading project: {e}")
             import traceback
+
             traceback.print_exc()
             sys.exit(1)
-    
+
     # Run the agent
     try:
-        run_coder(working_dir, args.model, args.interactive, project_prompt, args.with_packages)
+        run_coder(
+            working_dir=working_dir,
+            model=args.model,
+            interactive=args.interactive,
+            project_prompt=project_prompt,
+            with_packages=args.with_packages,
+            task_content=task_content,
+            task_file_path=task_file_path,
+            api_key=args.api_key,
+        )
     except Exception as e:
         print(f"Error: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
@@ -184,94 +232,238 @@ def get_system_prompt_path() -> Path:
     # System prompt is in the coder package
     base_dir = Path(__file__).parent.parent.parent
     system_prompt_path = base_dir / "prompts" / "system.md"
-    
+
     if not system_prompt_path.exists():
         raise FileNotFoundError(f"System prompt not found at: {system_prompt_path}")
-    
+
     return system_prompt_path
 
 
+def save_conversation_log(
+    working_dir: Path,
+    messages: List[Any],
+    stats: Optional[Dict[str, Any]] = None,
+    task_basename: Optional[str] = None,
+):
+    """Save conversation history as JSON Lines format."""
+    if task_basename:
+        log_path = working_dir / f"{task_basename}.jsonl"
+    else:
+        log_path = working_dir / "log.jsonl"
 
-
-def save_conversation_log(working_dir: Path, messages: List[Any], stats: Optional[Dict[str, Any]] = None):
-    """Save conversation history and statistics to JSON file."""
-    log_path = working_dir / "conversation_log.json"
-    
-    # Convert messages to serializable format
-    log_data = {
-        "timestamp": datetime.now().isoformat(),
-        "messages": []
-    }
-    
-    for msg in messages:
-        if hasattr(msg, "dict"):  # LangChain message
-            msg_dict = msg.dict()
-        elif isinstance(msg, dict):
-            msg_dict = msg
-        else:
-            msg_dict = {"content": str(msg), "type": type(msg).__name__}
-        
-        log_data["messages"].append(msg_dict)
-    
-    # Add statistics if provided
-    if stats:
-        log_data["statistics"] = stats
-    
-    # Save to file
+    # Write as JSON Lines format
     with open(log_path, "w") as f:
-        json.dump(log_data, f, indent=2, default=str)
-    
+        # Start event
+        f.write(
+            json.dumps({"event": "start", "task": task_basename or "inline"}) + "\n"
+        )
+
+        # Process messages to extract events
+        for msg in messages:
+            # Extract tool calls and responses
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tool_call in msg.tool_calls:
+                    # Handle different tool call formats
+                    if isinstance(tool_call, dict):
+                        tool_name = tool_call.get("name", "unknown")
+                        tool_args = tool_call.get("args", {})
+                    else:
+                        tool_name = getattr(tool_call, "name", "unknown")
+                        tool_args = getattr(tool_call, "args", {})
+
+                    if tool_name == "todo_write":
+                        todos = tool_args.get("todos", [])
+                        f.write(
+                            json.dumps(
+                                {
+                                    "event": "todo",
+                                    "action": "update",
+                                    "count": len(todos),
+                                    "tasks": [
+                                        {
+                                            "content": t.get("content", ""),
+                                            "status": t.get("status", ""),
+                                        }
+                                        for t in todos
+                                    ],
+                                }
+                            )
+                            + "\n"
+                        )
+                    elif tool_name == "python_exec":
+                        f.write(
+                            json.dumps(
+                                {
+                                    "event": "python_exec",
+                                    "code_length": len(tool_args.get("code", "")),
+                                }
+                            )
+                            + "\n"
+                        )
+                    elif tool_name == "save_code":
+                        f.write(
+                            json.dumps(
+                                {
+                                    "event": "save_code",
+                                    "code_length": len(tool_args.get("code", "")),
+                                }
+                            )
+                            + "\n"
+                        )
+                    elif tool_name == "report_issue":
+                        f.write(
+                            json.dumps(
+                                {
+                                    "event": "report_issue",
+                                    "issue": tool_args.get("text", "")[
+                                        :200
+                                    ],  # First 200 chars
+                                }
+                            )
+                            + "\n"
+                        )
+                    else:
+                        f.write(
+                            json.dumps({"event": "tool_call", "tool": tool_name}) + "\n"
+                        )
+
+            # Handle tool responses
+            if hasattr(msg, "content") and isinstance(msg.content, str):
+                try:
+                    # Try to parse tool response
+                    content_data = json.loads(msg.content)
+                    if "success" in content_data:
+                        f.write(
+                            json.dumps(
+                                {
+                                    "event": "tool_response",
+                                    "success": content_data.get("success", False),
+                                    "error": content_data.get("error")
+                                    if not content_data.get("success")
+                                    else None,
+                                }
+                            )
+                            + "\n"
+                        )
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        # Add statistics if provided
+        if stats:
+            f.write(
+                json.dumps(
+                    {
+                        "event": "statistics",
+                        "tool_usage": stats.get("tool_usage", {}),
+                        "tokens": stats.get("token_consumption", {}),
+                        "execution_time": stats.get("execution_time_seconds", 0),
+                    }
+                )
+                + "\n"
+            )
+
+        # Add agent feedback if any
+        from coder.tools import get_reported_issues
+
+        reported_issues = get_reported_issues()
+        if reported_issues:
+            for issue in reported_issues:
+                f.write(
+                    json.dumps(
+                        {"event": "agent_feedback", "content": issue.get("content", "")}
+                    )
+                    + "\n"
+                )
+
+        # Complete event
+        f.write(
+            json.dumps(
+                {
+                    "event": "complete",
+                    "status": "success"
+                    if not reported_issues
+                    else "success_with_issues",
+                }
+            )
+            + "\n"
+        )
+
     return log_path
 
 
-def run_coder(working_dir: Path, model: Optional[str], interactive: bool, project_prompt: Optional[str] = None, with_packages: Optional[List[str]] = None):
+def run_coder(
+    working_dir: Path,
+    model: Optional[str],
+    interactive: bool,
+    project_prompt: Optional[str] = None,
+    with_packages: Optional[List[str]] = None,
+    task_content: Optional[str] = None,
+    task_file_path: Optional[Path] = None,
+    api_key: Optional[str] = None,
+):
     """Run the coder agent."""
     messages = []
     try:
         # Get system prompt from codebase
-        system_prompt_path = get_system_prompt_path()
-        
-        # Get task path
-        task_path = working_dir / "task.md"
-        
-        # Print info about dynamic mode if packages specified
+        base_dir = Path(__file__).parent.parent.parent
+        system_prompt_path = base_dir / "prompts" / "system.md"
+
+        if not system_prompt_path.exists():
+            raise FileNotFoundError(f"System prompt not found at: {system_prompt_path}")
+
+        # Print info
+        print("🚀 Running coder")
+
         if with_packages:
-            print(f"📦 Dynamic package mode with: {', '.join(with_packages)}")
-        
+            print(f"📦 Dynamic packages: {', '.join(with_packages)}")
+
+        # Determine task basename for output files
+        task_basename = None
+        if task_file_path:
+            task_basename = task_file_path.stem
+
         # Create agent
         print(f"🤖 Creating agent with model: {model or MODEL_STRING}")
         agent = create_coding_agent(
             working_directory=str(working_dir),
             system_prompt_path=str(system_prompt_path),
-            task_prompt_path=str(task_path),
             model=model,
             project_prompt=project_prompt,
-            with_packages=with_packages
+            with_packages=with_packages,
+            task_content=task_content,
+            task_basename=task_basename,
+            api_key=api_key,
         )
-        
+
         if interactive:
             run_interactive(agent, working_dir, project_prompt)
         else:
             # Single run mode
             message = "Please complete the task described in the instructions."
-            
+
             messages, stats = run_agent(agent, message)
-            
+
             # Save conversation log with statistics
-            log_path = save_conversation_log(working_dir, messages, stats)
-            
+            log_path = save_conversation_log(
+                working_dir, messages, stats, task_basename
+            )
+
             # Print the last assistant message
             for msg in reversed(messages):
                 # Skip tool call messages
                 has_tool_calls = False
                 if hasattr(msg, "tool_calls") and msg.tool_calls:
                     has_tool_calls = True
-                elif hasattr(msg, "additional_kwargs") and msg.additional_kwargs.get("tool_calls"):
+                elif hasattr(msg, "additional_kwargs") and msg.additional_kwargs.get(
+                    "tool_calls"
+                ):
                     has_tool_calls = True
                 elif isinstance(msg, dict):
-                    if msg.get("tool_calls") or msg.get("additional_kwargs", {}).get("tool_calls"):
+                    if msg.get("tool_calls") or msg.get("additional_kwargs", {}).get(
+                        "tool_calls"
+                    ):
                         has_tool_calls = True
-                
+
                 # Find content message
                 if not has_tool_calls:
                     content = None
@@ -281,14 +473,17 @@ def run_coder(working_dir: Path, model: Optional[str], interactive: bool, projec
                         elif hasattr(msg, "role") and msg.role == "assistant":
                             content = msg.content
                     elif isinstance(msg, dict):
-                        if msg.get("content") and (msg.get("type") == "ai" or msg.get("role") == "assistant"):
+                        if msg.get("content") and (
+                            msg.get("type") == "ai" or msg.get("role") == "assistant"
+                        ):
                             content = msg.get("content")
-                    
+
                     if content:
                         # Use rich for markdown formatting
                         try:
                             from rich.console import Console
                             from rich.markdown import Markdown
+
                             console = Console()
                             print()  # Add newline before response
                             console.print(Markdown(content))
@@ -298,17 +493,19 @@ def run_coder(working_dir: Path, model: Optional[str], interactive: bool, projec
                             print("-" * 40)
                             print(content)
                         break
-            
+
             # Display statistics
             display_statistics(stats)
-            
-            print(f"📄 Conversation saved to: {log_path}")
-            
-    except Exception as e:
+
+            print(f"📄 Log saved to: {log_path}")
+
+    except Exception:
         # Save partial conversation if available
         if messages:
-            log_path = save_conversation_log(working_dir, messages)
-            print(f"\n📄 Partial conversation saved to: {log_path}")
+            log_path = save_conversation_log(
+                working_dir, messages, task_basename=task_basename
+            )
+            print(f"\n📄 Partial log saved to: {log_path}")
         raise
 
 
@@ -316,62 +513,72 @@ def run_interactive(agent, working_dir: Path, project_prompt: Optional[str] = No
     """Run the agent in interactive mode."""
     print(f"\n🚀 Interactive mode - working in: {working_dir}")
     if project_prompt:
-        print(f"📦 Project configuration loaded")
+        print("📦 Project configuration loaded")
     print("Type 'exit' or 'quit' to stop.\n")
-    
+
     thread_id = "interactive"
     all_messages = []
     cumulative_stats = {
         "tool_usage": {},
-        "token_consumption": {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0
-        },
-        "execution_time_seconds": 0
+        "token_consumption": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        "execution_time_seconds": 0,
     }
-    
+
     try:
         while True:
             try:
                 user_input = input("👤 You: ").strip()
-                
+
                 if user_input.lower() in ["exit", "quit"]:
                     print("👋 Goodbye!")
                     break
-                    
+
                 if not user_input:
                     continue
-                    
+
                 print("\n🤖 Agent working...\n")
                 messages, stats = run_agent(agent, user_input, thread_id)
                 all_messages.extend(messages)
-                
+
                 # Update cumulative statistics
                 for tool, count in stats.get("tool_usage", {}).items():
-                    cumulative_stats["tool_usage"][tool] = cumulative_stats["tool_usage"].get(tool, 0) + count
-                
+                    cumulative_stats["tool_usage"][tool] = (
+                        cumulative_stats["tool_usage"].get(tool, 0) + count
+                    )
+
                 token_stats = stats.get("token_consumption", {})
-                cumulative_stats["token_consumption"]["input_tokens"] += token_stats.get("input_tokens", 0)
-                cumulative_stats["token_consumption"]["output_tokens"] += token_stats.get("output_tokens", 0)
-                cumulative_stats["token_consumption"]["total_tokens"] += token_stats.get("total_tokens", 0)
-                cumulative_stats["execution_time_seconds"] += stats.get("execution_time_seconds", 0)
-                
+                cumulative_stats["token_consumption"]["input_tokens"] += (
+                    token_stats.get("input_tokens", 0)
+                )
+                cumulative_stats["token_consumption"]["output_tokens"] += (
+                    token_stats.get("output_tokens", 0)
+                )
+                cumulative_stats["token_consumption"]["total_tokens"] += (
+                    token_stats.get("total_tokens", 0)
+                )
+                cumulative_stats["execution_time_seconds"] += stats.get(
+                    "execution_time_seconds", 0
+                )
+
                 # Save after each interaction
                 save_conversation_log(working_dir, all_messages, cumulative_stats)
-                
+
                 # Print the last assistant message
                 for msg in reversed(messages):
                     # Skip tool call messages
                     has_tool_calls = False
                     if hasattr(msg, "tool_calls") and msg.tool_calls:
                         has_tool_calls = True
-                    elif hasattr(msg, "additional_kwargs") and msg.additional_kwargs.get("tool_calls"):
+                    elif hasattr(
+                        msg, "additional_kwargs"
+                    ) and msg.additional_kwargs.get("tool_calls"):
                         has_tool_calls = True
                     elif isinstance(msg, dict):
-                        if msg.get("tool_calls") or msg.get("additional_kwargs", {}).get("tool_calls"):
+                        if msg.get("tool_calls") or msg.get(
+                            "additional_kwargs", {}
+                        ).get("tool_calls"):
                             has_tool_calls = True
-                    
+
                     # Find content message
                     if not has_tool_calls:
                         content = None
@@ -381,14 +588,18 @@ def run_interactive(agent, working_dir: Path, project_prompt: Optional[str] = No
                             elif hasattr(msg, "role") and msg.role == "assistant":
                                 content = msg.content
                         elif isinstance(msg, dict):
-                            if msg.get("content") and (msg.get("type") == "ai" or msg.get("role") == "assistant"):
+                            if msg.get("content") and (
+                                msg.get("type") == "ai"
+                                or msg.get("role") == "assistant"
+                            ):
                                 content = msg.get("content")
-                        
+
                         if content:
                             # Use rich for markdown formatting
                             try:
                                 from rich.console import Console
                                 from rich.markdown import Markdown
+
                                 console = Console()
                                 print()  # Add newline
                                 console.print("[bold]Agent:[/bold]")
@@ -398,7 +609,7 @@ def run_interactive(agent, working_dir: Path, project_prompt: Optional[str] = No
                                 # Fallback to plain text
                                 print(f"\n🤖 Agent: {content}\n")
                             break
-                        
+
             except KeyboardInterrupt:
                 print("\n👋 Goodbye!")
                 break
@@ -407,13 +618,17 @@ def run_interactive(agent, working_dir: Path, project_prompt: Optional[str] = No
     finally:
         # Save final conversation log with statistics
         if all_messages:
-            log_path = save_conversation_log(working_dir, all_messages, cumulative_stats)
+            log_path = save_conversation_log(
+                working_dir, all_messages, cumulative_stats
+            )
             # Display final cumulative statistics
-            if cumulative_stats and any(cumulative_stats.get("tool_usage", {}).values() or 
-                                       cumulative_stats.get("token_consumption", {}).values()):
+            if cumulative_stats and any(
+                cumulative_stats.get("tool_usage", {}).values()
+                or cumulative_stats.get("token_consumption", {}).values()
+            ):
                 print("\n📊 Session Summary:")
                 display_statistics(cumulative_stats)
-            print(f"📄 Conversation saved to: {log_path}")
+            print(f"📄 Log saved to: {log_path}")
 
 
 if __name__ == "__main__":
