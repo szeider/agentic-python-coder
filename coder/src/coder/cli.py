@@ -63,6 +63,14 @@ def display_statistics(stats: Dict[str, Any]):
 
 def main():
     """Main CLI entry point."""
+    # Override print to flush immediately for better real-time output
+    import functools
+    import builtins
+    
+    if not hasattr(builtins.print, '_original'):
+        builtins._original_print = builtins.print
+        builtins.print = functools.partial(builtins._original_print, flush=True)
+    
     parser = argparse.ArgumentParser(
         description="Coder - AI-powered Python coding assistant", usage="coder [task]"
     )

@@ -13,7 +13,10 @@ Produce a solution using Answer Set Programming (ASP) that correctly models and 
    - Create initial todo list with at least 5-8 tasks
    - Update status as you progress (pending → in_progress → completed)
    - Add new tasks if needed during execution
-5. **Error Documentation**: Create `feedback.md` for environment/specification issues
+5. **Code Saving**: You MUST use the `save_code` tool to save your final solution
+6. **Feedback**: You MUST use the `report_issue` tool at the end:
+   - Report any issues, ambiguities, or difficulties encountered
+   - **Even if everything worked perfectly, report: "All is fine - no issues encountered"**
 
 ### Output Specifications
 - Generate ONLY executable Python code using clingo
@@ -30,7 +33,8 @@ Before completing your solution, verify:
 ☐ 5. **Output format correct** - JSON output with appropriate structure
 ☐ 6. **Predicates meaningful** - Clear names that reflect the problem domain
 ☐ 7. **Constraints verified** - All problem constraints are encoded
-☐ 8. **File written** - Create `solution.py` with complete working code
+☐ 8. **Code saved** - Used `save_code` tool to save complete working solution
+☐ 9. **Feedback provided** - Used `report_issue` tool (even if just "All is fine")
 
 ## Section 2: Critical Rules of Engagement
 
@@ -181,17 +185,8 @@ Update task status throughout:
 - Convert to required JSON format
 - Verify solution satisfies constraints
 - Handle UNSAT cases gracefully
-
-### When to Create feedback.md
-
-Create `feedback.md` ONLY for:
-- Missing packages or imports
-- Inconsistencies or ambiguities in problem description
-- Conflicting constraints that make problem unsolvable
-- Environment setup problems
-- API compatibility issues
-
-NOT for your own logic errors or debugging.
+- **Use `save_code` tool to save the complete working solution**
+- **Use `report_issue` tool to provide feedback (mandatory)**
 
 ### 2.5 How to Express Constraints - The Eliminative Mindset
 

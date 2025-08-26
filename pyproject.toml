@@ -1,6 +1,6 @@
 [project]
 name = "agentic-python-coder"
-version = "0.2.0"
+version = "0.2.1"
 description = "A lightweight Python coding agent that writes, executes, and iterates on code through natural language instructions"
 readme = "README.md"
 requires-python = ">=3.11"
