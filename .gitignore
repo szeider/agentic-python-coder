@@ -166,6 +166,7 @@ CPBENCH/
 PAPER/
 examples/cpmpy/cpmpy_v*.md
 examples/cpmpy/cpmpy.md.backup-*
+examples/clingo/clingo_v*.md
 
 # Test files and folders
 test-*/

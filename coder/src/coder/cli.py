@@ -13,11 +13,11 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain
 warnings.filterwarnings("ignore", message=".*PythonREPL.*")
 
 from coder.agent import create_coding_agent, run_agent  # noqa: E402
-from coder.project_md import (
+from coder.project_md import (  # noqa: E402
     parse_project_file,
     check_packages_available,
     create_project_prompt,
-)  # noqa: E402
+)
 from coder.llm import MODEL_STRING  # noqa: E402
 
 
@@ -66,11 +66,11 @@ def main():
     # Override print to flush immediately for better real-time output
     import functools
     import builtins
-    
-    if not hasattr(builtins.print, '_original'):
+
+    if not hasattr(builtins.print, "_original"):
         builtins._original_print = builtins.print
         builtins.print = functools.partial(builtins._original_print, flush=True)
-    
+
     parser = argparse.ArgumentParser(
         description="Coder - AI-powered Python coding assistant", usage="coder [task]"
     )
@@ -118,6 +118,12 @@ def main():
         "--api-key",
         dest="api_key",
         help="OpenRouter API key (overrides ~/.config/coder/.env)",
+    )
+
+    parser.add_argument(
+        "--todo",
+        action="store_true",
+        help="Enable todo_write tool for task tracking and planning",
     )
 
     args = parser.parse_args()
@@ -226,6 +232,7 @@ def main():
             task_content=task_content,
             task_file_path=task_file_path,
             api_key=args.api_key,
+            todo=args.todo,
         )
     except Exception as e:
         print(f"Error: {e}")
@@ -235,11 +242,15 @@ def main():
         sys.exit(1)
 
 
-def get_system_prompt_path() -> Path:
+def get_system_prompt_path(todo: bool = False) -> Path:
     """Get the path to the system prompt in the codebase."""
     # System prompt is in the coder package
     base_dir = Path(__file__).parent.parent.parent
-    system_prompt_path = base_dir / "prompts" / "system.md"
+
+    if todo:
+        system_prompt_path = base_dir / "prompts" / "system_todo.md"
+    else:
+        system_prompt_path = base_dir / "prompts" / "system.md"
 
     if not system_prompt_path.exists():
         raise FileNotFoundError(f"System prompt not found at: {system_prompt_path}")
@@ -408,13 +419,18 @@ def run_coder(
     task_content: Optional[str] = None,
     task_file_path: Optional[Path] = None,
     api_key: Optional[str] = None,
+    todo: bool = False,
 ):
     """Run the coder agent."""
     messages = []
     try:
         # Get system prompt from codebase
         base_dir = Path(__file__).parent.parent.parent
-        system_prompt_path = base_dir / "prompts" / "system.md"
+
+        if todo:
+            system_prompt_path = base_dir / "prompts" / "system_todo.md"
+        else:
+            system_prompt_path = base_dir / "prompts" / "system.md"
 
         if not system_prompt_path.exists():
             raise FileNotFoundError(f"System prompt not found at: {system_prompt_path}")
@@ -441,6 +457,7 @@ def run_coder(
             task_content=task_content,
             task_basename=task_basename,
             api_key=api_key,
+            todo=todo,
         )
 
         if interactive:

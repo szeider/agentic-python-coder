@@ -1,4 +1,4 @@
-# Answer Set Programming (ASP) Task - v06
+# Answer Set Programming (ASP) Task - v03
 
 ## Section 1: Mission Briefing & Core Requirements
 
@@ -9,10 +9,10 @@ Produce a solution using Answer Set Programming (ASP) that correctly models and 
 1. **Tool**: You MUST use the clingo Python API for modeling and solving
 2. **Execution Time**: Your script must complete within 10 seconds
 3. **Output Format**: Print the final solution as a single JSON object to stdout
-4. **Task Planning**: Structure your approach with clear steps:
-   - Mentally break down the problem into 5-8 logical tasks
-   - Follow the structured workflow defined below
-   - Use code comments to track your progress through tasks
+4. **Task Management**: You MUST use the TodoWrite tool at the START of your work:
+   - Create initial todo list with at least 5-8 tasks
+   - Update status as you progress (pending → in_progress → completed)
+   - Add new tasks if needed during execution
 5. **Error Documentation**: Create `feedback.md` for environment/specification issues
 
 ### Output Specifications
@@ -142,28 +142,23 @@ carrying(R,I,T+1) :- pickup(R,I,T).
 
 ### Required 5-Step Workflow
 
-#### Step 0: Plan Your Approach (MANDATORY - DO THIS FIRST!)
+#### Step 0: Initialize Task Management (MANDATORY - DO THIS FIRST!)
 
-**Structure your solution with these logical tasks:**
-```python
-# Task Plan:
-# 1. Analyze problem and identify constraints
-# 2. Design ASP predicates and model structure  
-# 3. Implement facts and choice rules
-# 4. Add constraints and optimization
-# 5. Solve and extract solution
-# 6. Format output as JSON
-# 7. Test and verify solution
+**You MUST start by using TodoWrite with a task list like this:**
+```
+1. Analyze problem and identify constraints
+2. Design ASP predicates and model structure  
+3. Implement facts and choice rules
+4. Add constraints and optimization
+5. Solve and extract solution
+6. Format output as JSON
+7. Test and verify solution
 ```
 
-Use comments in your code to indicate which task you're working on:
-```python
-# Task 1: Analyze problem and identify constraints
-# [Your analysis code here]
-
-# Task 2: Design ASP predicates and model structure
-# [Your design code here]
-```
+Update task status throughout:
+- Mark current task as `in_progress` before starting it
+- Mark as `completed` when done
+- Add new tasks if you discover additional work
 
 #### Step 1: Analyze & Model
 - Identify objects/entities, relationships, constraints, optimization criteria

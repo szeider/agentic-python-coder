@@ -47,6 +47,7 @@ def create_coding_agent(
     task_content: Optional[str] = None,
     task_basename: Optional[str] = None,
     api_key: Optional[str] = None,
+    todo: bool = False,
 ):
     """Create a ReAct agent for Python coding tasks.
 
@@ -59,6 +60,7 @@ def create_coding_agent(
         task_content: Task description/content
         task_basename: Base name for output files
         api_key: Optional API key override
+        todo: If True, includes todo_write tool for task tracking
 
     Returns:
         Configured LangGraph agent
@@ -85,7 +87,10 @@ def create_coding_agent(
     )
 
     # Minimal tool set (fileless mode only now)
-    tools = [python_exec, save_code, report_issue, todo_write]
+    if todo:
+        tools = [python_exec, save_code, report_issue, todo_write]
+    else:
+        tools = [python_exec, save_code, report_issue]
 
     # Load prompts
     prompts = []
