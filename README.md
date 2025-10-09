@@ -68,10 +68,42 @@ coder --with clingo --project examples/clingo/clingo.md \
 ```
 
 
+## Model Selection
+
+The coder supports multiple LLM models via the `--model` flag:
+
+```bash
+# Claude Sonnet 4.5 (default)
+coder "your task"
+
+# DeepSeek v3.1 (optimized for coding)
+coder --model deepseek "your task"
+
+# Grok (fast reasoning mode)
+coder --model grok "your task"
+
+# Qwen3 Coder (cost-effective)
+coder --model qwen "your task"
+
+# Gemini Pro 2.5 (1M+ context)
+coder --model gemini "your task"
+
+# GPT-5 (latest OpenAI)
+coder --model gpt "your task"
+```
+
+**Available models:**
+- `claude` - Claude Sonnet 4.5 (default)
+- `deepseek` - DeepSeek v3.1 with optimized parameters
+- `grok` - X.AI Grok with fast reasoning mode
+- `qwen` - Qwen3 Coder for cost-effective code generation
+- `gemini` - Google Gemini Pro 2.5 with 1M+ context window
+- `gpt` - OpenAI GPT-5 with high quality output
+
 ## How It Works
 
 1. You describe a task in natural language
-2. The agent uses Claude Sonnet 4 to plan the approach
+2. The agent uses your selected model to plan the approach
 3. Code is written and executed in an IPython kernel
 4. Errors are automatically detected and fixed
 5. The solution is refined until it works

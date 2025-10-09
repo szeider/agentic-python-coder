@@ -18,7 +18,7 @@ from coder.project_md import (  # noqa: E402
     check_packages_available,
     create_project_prompt,
 )
-from coder.llm import MODEL_STRING  # noqa: E402
+from coder.llm import MODEL_STRING, MODEL_REGISTRY  # noqa: E402
 
 
 def display_statistics(stats: Dict[str, Any]):
@@ -128,6 +128,22 @@ def main():
 
     args = parser.parse_args()
 
+    # Resolve task file path BEFORE changing directory (if using --dir)
+    task_file_path = None
+    task_content = None
+
+    if args.task_file:
+        # --task flag provided: resolve path before chdir
+        task_file_path = Path(args.task_file).resolve()
+        if not task_file_path.exists():
+            print(f"Error: Task file not found: {args.task_file}")
+            sys.exit(1)
+        task_content = task_file_path.read_text()
+
+    # Resolve project file path BEFORE changing directory
+    if args.project:
+        args.project = str(Path(args.project).resolve())
+
     # Set up working directory
     if args.working_dir:
         working_dir = Path(args.working_dir).resolve()
@@ -137,16 +153,9 @@ def main():
         working_dir = Path.cwd()
 
     # Determine task handling
-    task_file_path = None
-    task_content = None
-
     if args.task_file:
-        # --task flag provided: read task from file
-        task_file_path = Path(args.task_file)
-        if not task_file_path.exists():
-            print(f"Error: Task file not found: {args.task_file}")
-            sys.exit(1)
-        task_content = task_file_path.read_text()
+        # Task already loaded above
+        pass
     elif args.task_input:
         # Positional task: treat as inline task
         task_content = args.task_input
@@ -178,6 +187,26 @@ def main():
             print("  --with pandas")
             print("  --with 'numpy>=1.20'")
             print("  --with 'requests[security]'")
+            sys.exit(1)
+
+    # Validate model if provided
+    if args.model:
+        # Check if the model is in the registry or is a full path
+        if args.model not in MODEL_REGISTRY and "/" not in args.model:
+            available_models = sorted(
+                [m for m in MODEL_REGISTRY.keys() if m != "default"]
+            )
+            print(f"❌ Error: Unknown model: '{args.model}'")
+            print("\nAvailable models:")
+            for model in available_models:
+                print(f"  - {model}")
+            print("\nUsage:")
+            print('  coder --model claude "your task"     # Claude Sonnet 4 (default)')
+            print('  coder --model deepseek "your task"   # DeepSeek v3.1')
+            print('  coder --model grok "your task"       # X.AI Grok')
+            print('  coder --model qwen "your task"       # Qwen3 Coder')
+            print('  coder --model gemini "your task"     # Google Gemini Pro 2.5')
+            print('  coder --model gpt "your task"        # OpenAI GPT-5')
             sys.exit(1)
 
     # Validate task is provided
