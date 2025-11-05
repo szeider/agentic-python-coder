@@ -20,13 +20,15 @@ For more details on the coder and particularly on its application to constraint 
 ### Install
 
 ```bash
-# Install coder globally
-uv tool install agentic-python-coder
+# Install from GitHub
+uv tool install git+https://github.com/szeider/agentic-python-coder
 
 # Set up API key (one-time setup)
 mkdir -p ~/.config/coder
 echo 'OPENROUTER_API_KEY="your-key-here"' > ~/.config/coder/.env
 ```
+
+**Note:** The package is not yet published to PyPI. Install directly from GitHub as shown above.
 
 ## Quick Start
 

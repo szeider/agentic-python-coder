@@ -52,6 +52,15 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["coder/src/coder"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"coder/prompts" = "coder/prompts"
+"examples/cpmpy/cpmpy.md" = "examples/cpmpy/cpmpy.md"
+"examples/cpmpy/README.md" = "examples/cpmpy/README.md"
+"examples/cpmpy/sample_problems" = "examples/cpmpy/sample_problems"
+"examples/clingo/clingo.md" = "examples/clingo/clingo.md"
+"examples/clingo/README.md" = "examples/clingo/README.md"
+"examples/clingo/sample_tasks" = "examples/clingo/sample_tasks"
+
 [tool.pytest.ini_options]
 pythonpath = ["coder/src"]
 
