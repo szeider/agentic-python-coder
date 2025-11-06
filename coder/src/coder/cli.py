@@ -272,17 +272,31 @@ def main():
 
 
 def get_system_prompt_path(todo: bool = False) -> Path:
-    """Get the path to the system prompt in the codebase."""
-    # System prompt is in the coder package
-    base_dir = Path(__file__).parent.parent.parent
+    """Get the path to the system prompt in the codebase.
+
+    Handles both development (editable) and installed package structures:
+    - Editable: coder/src/coder/cli.py → coder/prompts/
+    - Installed: site-packages/coder/cli.py → site-packages/coder/prompts/
+    """
+    # Start from the directory containing this file
+    current_dir = Path(__file__).parent
+
+    # Check if prompts is at current level (installed package)
+    prompts_dir = current_dir / "prompts"
+    if not prompts_dir.exists():
+        # Editable install: go up to coder/ root, then to prompts/
+        prompts_dir = current_dir.parent.parent / "prompts"
 
     if todo:
-        system_prompt_path = base_dir / "prompts" / "system_todo.md"
+        system_prompt_path = prompts_dir / "system_todo.md"
     else:
-        system_prompt_path = base_dir / "prompts" / "system.md"
+        system_prompt_path = prompts_dir / "system.md"
 
     if not system_prompt_path.exists():
-        raise FileNotFoundError(f"System prompt not found at: {system_prompt_path}")
+        raise FileNotFoundError(
+            f"System prompt not found at: {system_prompt_path}\n"
+            f"Searched from: {Path(__file__)}"
+        )
 
     return system_prompt_path
 
@@ -453,16 +467,8 @@ def run_coder(
     """Run the coder agent."""
     messages = []
     try:
-        # Get system prompt from codebase
-        base_dir = Path(__file__).parent.parent.parent
-
-        if todo:
-            system_prompt_path = base_dir / "prompts" / "system_todo.md"
-        else:
-            system_prompt_path = base_dir / "prompts" / "system.md"
-
-        if not system_prompt_path.exists():
-            raise FileNotFoundError(f"System prompt not found at: {system_prompt_path}")
+        # Get system prompt using the helper function
+        system_prompt_path = get_system_prompt_path(todo)
 
         # Print info
         print("🚀 Running coder")

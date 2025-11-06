@@ -13,7 +13,7 @@ For more details on the coder and particularly on its application to constraint 
 
 ### Prerequisites
 
-- Python 3.11 or higher
+- Python 3.13
 - UV package manager: `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - OpenRouter API key from [openrouter.ai](https://openrouter.ai)
 

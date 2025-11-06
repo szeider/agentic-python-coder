@@ -1,14 +1,17 @@
-# CPMPy Examples
+# CPMpy Examples
 
-Constraint programming examples using CPMPy for solving combinatorial problems.
+Constraint programming examples using CPMpy for solving combinatorial problems.
 
 ## Quick Start
 
 ```bash
-# Install CPMPy dependency
+# Recommended: Use --with flag (no installation needed)
+coder --with cpmpy --project cpmpy.md n_queens.md
+
+# Alternative: Install CPMpy manually first
 uv pip install cpmpy
 
-# Solve N-Queens problem
+# Then solve N-Queens problem
 cd sample_problems
 coder --project ../cpmpy.md n_queens.md
 
@@ -19,7 +22,7 @@ coder --project ../cpmpy.md magic_square.md
 ## What's Included
 
 The `cpmpy.md` project template provides:
-- CPMPy constraint modeling patterns
+- CPMpy constraint modeling patterns
 - Common constraint types (AllDifferent, Sum, etc.)
 - Solving strategies and optimization techniques
 
@@ -62,5 +65,5 @@ coder --project cpmpy.md your_problem.md
 
 ## Resources
 
-- [CPMPy Documentation](https://cpmpy.readthedocs.io/)
+- [CPMpy Documentation](https://cpmpy.readthedocs.io/)
 - [CP-Bench Dataset](https://zenodo.org/records/15592407)
