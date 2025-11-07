@@ -35,7 +35,7 @@ echo 'OPENROUTER_API_KEY="your-key-here"' > ~/.config/coder/.env
 ### Basic Usage
 
 ```bash
-# Simple inline task (creates code.py and log.jsonl)
+# Simple inline task (creates solution.py and log.jsonl)
 coder "Create a function that calculates factorial"
 
 # Task from file (creates {basename}_code.py and {basename}.jsonl)
@@ -113,7 +113,7 @@ coder --model gpt "your task"
 ### Key Features
 
 #### Output Files
-- **Inline tasks**: Creates `code.py` and `log.jsonl`
+- **Inline tasks**: Creates `solution.py` and `log.jsonl`
 - **File tasks**: Creates `{basename}_code.py` and `{basename}.jsonl`
 - **Structured logs**: JSON Lines format for easy parsing and analysis
 

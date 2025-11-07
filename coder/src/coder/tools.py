@@ -300,7 +300,7 @@ def save_code(code: str) -> str:
     """Save the final code (fileless mode).
 
     This saves your code to {basename}_code.py where basename
-    is determined from the task file name, or code.py for inline tasks.
+    is determined from the task file name, or solution.py for inline tasks.
 
     Args:
         code: The complete Python code
@@ -316,7 +316,7 @@ def save_code(code: str) -> str:
         if _task_basename:
             filename = f"{_task_basename}_code.py"
         else:
-            filename = "code.py"
+            filename = "solution.py"
 
         # Save to working directory
         output_path = working_dir.get() / filename
