@@ -69,110 +69,6 @@ def error_response(error: str, **kwargs) -> str:
     return json.dumps(response, indent=2)
 
 
-# File operation tools
-@tool
-def read_file(file_path: str) -> str:
-    """Read a file from the working directory.
-
-    Args:
-        file_path: Path to the file relative to working directory
-
-    Returns:
-        JSON with file content or error message
-    """
-    try:
-        full_path = working_dir.resolve_path(file_path)
-        content = full_path.read_text()
-        return success_response(content, file_path=file_path)
-    except FileNotFoundError:
-        return error_response(f"File not found: {file_path}")
-    except Exception as e:
-        return error_response(f"Error reading file: {str(e)}")
-
-
-@tool
-def write_file(file_path: str, content: str) -> str:
-    """Write content to a file in the working directory.
-
-    Args:
-        file_path: Path to the file relative to working directory
-        content: Content to write to the file
-
-    Returns:
-        JSON with success status or error message
-    """
-    try:
-        full_path = working_dir.resolve_path(file_path)
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(content)
-        return success_response(
-            f"Successfully wrote to {file_path}",
-            file_path=file_path,
-            bytes_written=len(content),
-        )
-    except Exception as e:
-        return error_response(f"Error writing file: {str(e)}")
-
-
-@tool
-def list_files(pattern: str = "*") -> str:
-    """List files in the working directory.
-
-    Args:
-        pattern: Glob pattern to filter files (required, defaults to "*" for all files)
-
-    Returns:
-        JSON with list of file paths or error message
-    """
-    try:
-        wd = working_dir.get()
-        files = []
-
-        # Simplified pattern handling
-        if "**" in pattern:
-            # Recursive pattern - use rglob
-            matches = wd.rglob(pattern)
-        else:
-            # Non-recursive pattern - use glob
-            matches = wd.glob(pattern)
-
-        for path in matches:
-            if path.is_file():
-                try:
-                    relative_path = path.relative_to(wd)
-                    files.append(str(relative_path))
-                except ValueError:
-                    continue
-
-        return success_response(sorted(files), pattern=pattern, count=len(files))
-    except Exception as e:
-        return error_response(f"Error listing files: {str(e)}")
-
-
-@tool
-def delete_file(file_path: str) -> str:
-    """Delete a file from the working directory.
-
-    Args:
-        file_path: Path to the file relative to working directory
-
-    Returns:
-        JSON with success status or error message
-    """
-    try:
-        full_path = working_dir.resolve_path(file_path)
-        if not full_path.exists():
-            return error_response(f"File not found: {file_path}")
-        if not full_path.is_file():
-            return error_response(f"Not a file: {file_path}")
-        full_path.unlink()
-        return success_response(
-            f"Successfully deleted {file_path}", file_path=file_path
-        )
-    except Exception as e:
-        return error_response(f"Error deleting file: {str(e)}")
-
-
 # Todo management tools
 _todos = []
 
@@ -285,7 +181,6 @@ def python_exec(code: str) -> str:
 
 
 # Fileless mode tools
-_solution_code = None
 _task_basename = None
 
 
@@ -309,8 +204,7 @@ def save_code(code: str) -> str:
         JSON with success status and file path
     """
     try:
-        global _solution_code, _task_basename
-        _solution_code = code
+        global _task_basename
 
         # Determine output filename
         if _task_basename:

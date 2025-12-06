@@ -10,7 +10,6 @@ from typing import Optional, List, Any, Dict
 
 # Suppress specific warnings that are known and not problematic
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain")
-warnings.filterwarnings("ignore", message=".*PythonREPL.*")
 
 from coder.agent import create_coding_agent, run_agent  # noqa: E402
 from coder.project_md import (  # noqa: E402

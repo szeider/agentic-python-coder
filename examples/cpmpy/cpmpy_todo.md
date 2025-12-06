@@ -324,6 +324,78 @@ Always prefer these over manual pairwise constraints:
 
 ## Section 3: The Playbook - Common Problem Patterns
 
+### 3.0 Cross-Cutting Patterns
+
+#### Pairwise Interaction Constraints
+When constraints involve relationships between every pair of items (e.g., "no two items can interact more than once", "all pairs must be different", "count meetings between pairs"):
+
+```python
+# PATTERN: Iterate over all unique pairs
+from itertools import combinations
+
+# For problems about pairs of items interacting/meeting:
+for i, j in combinations(range(n_items), 2):
+    # Add constraint about the pair (i, j)
+    # Example: count how many times they meet
+    meetings = cp.sum([
+        condition_where_i_and_j_meet(i, j, context)
+        for context in all_contexts
+    ])
+    model += meetings <= max_allowed
+
+# DO NOT attempt to model from single item's perspective
+# DO NOT use nested loops without ensuring i < j
+```
+
+This pattern applies to: scheduling meetings, social gatherings, round-robin tournaments, compatibility checking, etc.
+
+#### Output Ordering Requirements
+When the problem output requires positions or indices in a specific order (e.g., "first occurrence, second occurrence" or "earliest position, latest position"):
+
+```python
+# If you have multiple position variables for the same item:
+pos_first = cp.intvar(0, n-1, name="pos_first")
+pos_second = cp.intvar(0, n-1, name="pos_second")
+
+# CRITICAL: Add ordering constraint if output expects ordered positions
+model += pos_first < pos_second  # Ensures first comes before second
+
+# When building output array with positions:
+# WRONG: [pos_a.value(), pos_b.value()]  # May be out of order
+# RIGHT: sorted([pos_a.value(), pos_b.value()])  # Ensures correct order
+# OR: Add constraint pos_a < pos_b and use [pos_a.value(), pos_b.value()]
+```
+
+Common scenarios: Langford sequences, tournament schedules, time slots.
+
+#### State Transition and Pathfinding Problems
+For problems requiring a sequence of moves/actions (puzzles, river crossings, path finding):
+
+**If visiting each location exactly once** → Use Circuit:
+```python
+# For TSP, Hamiltonian paths, Mario-style grid paths
+next_node = cp.intvar(0, n-1, shape=n, name="next")
+model += cp.Circuit(next_node)
+```
+
+**If states can repeat or transform** → Use Table with state transitions:
+```python
+# For puzzles, river crossings, state machines
+max_steps = upper_bound_on_solution_length
+states = cp.intvar(min_state, max_state, shape=(max_steps,), name="state")
+
+# Initial and goal
+model += states[0] == initial_state
+model += states[-1] == goal_state
+
+# Valid transitions as (from_state, to_state) pairs
+valid_transitions = compute_all_valid_moves()
+for t in range(max_steps - 1):
+    model += cp.Table([states[t], states[t+1]], valid_transitions)
+    # A transition implies a change - enforce that consecutive states are different
+    model += states[t] != states[t+1]
+```
+
 ### 3.1 Sequencing & Permutation Problems
 
 #### Pattern: Traveling Salesperson / Circuit
@@ -362,6 +434,14 @@ distance_matrix = [
     [42, 30, 0, 12],
     [35, 34, 12, 0]
 ]
+
+# IMPORTANT: Distance/Cost Calculations
+# When working with problems that compute distances or costs from coordinates:
+# - Check if the problem expects immediate truncation to integers
+# - Some problems use int(euclidean_distance) directly without scaling
+# - Others may scale first for precision, then round
+# - Match the problem's implicit calculation method exactly
+# Example: distances[i][j] = int(math.hypot(x[i]-x[j], y[i]-y[j]))
 
 # Decision variables: successor[i] = j means visit city j after city i
 successor = cp.intvar(0, n-1, shape=n, name="successor")
@@ -743,6 +823,14 @@ When problem descriptions are unclear:
 - If "at least" vs "exactly" is ambiguous, try "exactly" first
 - Document assumptions in comments
 - Verify your interpretation makes the problem solvable
+
+### 5.4 Distance and Cost Calculations
+
+When computing distances, costs, or other derived values:
+- **Integer truncation timing matters**: Some problems truncate to integers immediately (e.g., `int(sqrt(x))`) while others scale first for precision
+- **Match the implicit specification**: If example outputs suggest integer distances, check if they use direct truncation or rounding after scaling
+- **Common pattern**: `distance = int(math.hypot(x2-x1, y2-y1))` truncates immediately vs `distance = round(math.hypot(x2-x1, y2-y1) * scale) / scale`
+- **When in doubt**: Try the simpler approach (direct truncation) first
 
 ## Performance Tips
 

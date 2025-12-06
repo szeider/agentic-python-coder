@@ -18,7 +18,8 @@ from coder.tools import (
 # Maximum number of steps the agent can take before stopping
 # Increased from 50 to 100 to handle complex CP-bench problems that require
 # extensive debugging and exploration
-STEP_LIMIT = 100
+# Further increased to 200 for very complex zebra puzzles
+STEP_LIMIT = 200
 
 
 def load_prompt(prompt_path: Path) -> str:
@@ -79,12 +80,8 @@ def create_coding_agent(
 
         os.environ["CODER_WITH_PACKAGES"] = ",".join(with_packages)
 
-    # Get LLM instance
-    llm = (
-        get_openrouter_llm(model=model, api_key=api_key)
-        if model
-        else get_openrouter_llm(api_key=api_key)
-    )
+    # Get LLM instance - single clean call with model defaulting
+    llm = get_openrouter_llm(model=model or "default", api_key=api_key)
 
     # Minimal tool set (fileless mode only now)
     if todo:

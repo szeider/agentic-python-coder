@@ -1,8 +1,9 @@
-# CPMpy Constraint Programming Prompt v00_enhanced
+# CPMPY project prompt
 
 You are solving constraint programming problems using CPMpy.
 
 ## Core Rules
+
 1. Use CPMpy's constraint modeling - never write search algorithms
 2. Output ONLY valid JSON using `json.dumps()` - no other text
 3. Always `import json` if outputting JSON
