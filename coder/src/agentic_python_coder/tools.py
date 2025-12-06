@@ -261,3 +261,14 @@ def get_reported_issues():
     """Get all reported issues for inclusion in the log."""
     global _reported_issues
     return _reported_issues
+
+
+def reset_global_state():
+    """Reset all global state to avoid accumulation across runs.
+
+    Called by create_coding_agent() to ensure clean state for each new agent.
+    """
+    global _todos, _task_basename, _reported_issues
+    _todos = []
+    _task_basename = None
+    _reported_issues = []

@@ -9,9 +9,9 @@ from pathlib import Path
 # Model aliases to full OpenRouter paths
 MODEL_REGISTRY = {
     "deepseek": "deepseek/deepseek-chat-v3.1",
-    "claude": "anthropic/claude-sonnet-4.5",
+    "sonnet": "anthropic/claude-sonnet-4.5",
+    "opus": "anthropic/claude-opus-4.5",
     "default": "anthropic/claude-sonnet-4.5",
-    # NEW MODELS
     "grok": "x-ai/grok-code-fast-1",
     "qwen": "qwen/qwen3-coder",
     "gemini": "google/gemini-2.5-pro",
@@ -32,21 +32,19 @@ MODEL_CONFIGS = {
             "stream_options": {"include_usage": True},
         },
     },
-    "anthropic/claude-sonnet-4": {
-        "temperature": 0.0,  # Original default
-        "streaming": True,  # Original hardcoded value
-        "max_tokens": 16384,  # Increased for complex problems (Sonnet 4 supports up to 64K)
-        "model_kwargs": {
-            "stream_options": {"include_usage": True}  # Original hardcoded
-        },
-    },
     "anthropic/claude-sonnet-4.5": {
         "temperature": 0.0,  # Default for deterministic output
         "streaming": True,
         "max_tokens": 16384,  # Sonnet 4.5 supports up to 64K
         "model_kwargs": {"stream_options": {"include_usage": True}},
     },
-    # NEW MODEL CONFIGURATIONS
+    "anthropic/claude-opus-4.5": {
+        "temperature": 0.0,
+        "streaming": True,
+        "max_tokens": 16384,  # Opus 4.5 supports up to 32K output
+        "model_kwargs": {"stream_options": {"include_usage": True}},
+    },
+    # Other model configurations
     "x-ai/grok-code-fast-1": {
         "temperature": 0.15,
         "max_tokens": 2000,
@@ -124,7 +122,7 @@ def get_api_key() -> str:
     api_key = os.getenv("OPENROUTER_API_KEY")
 
     if not api_key:
-        print("⚠️ No API key found. Set up with:")
+        print("Warning: No API key found. Set up with:")
         print("  mkdir -p ~/.config/coder")
         print("  echo 'OPENROUTER_API_KEY=sk-or-...' > ~/.config/coder/.env")
         print("\nOr use: --api-key sk-or-...")
@@ -137,6 +135,7 @@ def get_openrouter_llm(
     model: str = "default",
     temperature: Optional[float] = None,
     api_key: Optional[str] = None,
+    verbose: bool = False,
 ) -> ChatOpenAI:
     """Create a fully configured OpenRouter LLM instance.
     Special handling for GPT-5 which doesn't accept sampling parameters.
@@ -145,6 +144,7 @@ def get_openrouter_llm(
         model: Model alias (e.g., "deepseek", "claude") or full path
         temperature: Optional temperature override
         api_key: Optional API key
+        verbose: If True, print model info to console (default False for library use)
 
     Returns:
         Fully configured ChatOpenAI instance
@@ -168,9 +168,9 @@ def get_openrouter_llm(
         # Get hardcoded config for this model
         config = MODEL_CONFIGS.get(model_path, DEFAULT_CONFIG.copy())
 
-    # Print model info (only for non-default models)
-    if model != "default":
-        print(f"🤖 Using model: {model_path}")
+    # Print model info only if verbose
+    if verbose and model != "default":
+        print(f"Using model: {model_path}")
         if os.getenv("CODER_VERBOSE"):
             # Special handling for GPT-5 which has no temperature
             if model_path == "openai/gpt-5":
@@ -191,8 +191,8 @@ def get_openrouter_llm(
         "openai_api_key": api_key,
         "openai_api_base": "https://openrouter.ai/api/v1",
         "default_headers": {
-            "HTTP-Referer": "https://github.com/python-coding-agent",
-            "X-Title": "Python Coding Agent",
+            "HTTP-Referer": "https://github.com/szeider/agentic-python-coder",
+            "X-Title": "Agentic Python Coder",
         },
         "streaming": config["streaming"],
         "model_kwargs": config.get("model_kwargs", {}),
