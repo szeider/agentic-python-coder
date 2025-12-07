@@ -1,6 +1,6 @@
 """Python Coding Agent - A minimal coding assistant using LangGraph and OpenRouter."""
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 
 # High-level API (recommended for most users)
 from agentic_python_coder.runner import solve_task

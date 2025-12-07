@@ -4,8 +4,10 @@ import argparse
 import os
 import sys
 import re
+import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any
+from importlib import resources
 
 from agentic_python_coder.runner import (
     solve_task,
@@ -156,7 +158,66 @@ def parse_args():
         help="Maximum agent steps before stopping (default: 200)",
     )
 
+    parser.add_argument(
+        "--init",
+        nargs="?",
+        const="all",
+        metavar="TEMPLATE",
+        help="Initialize example templates (cpmpy, clingo, regex, or all)",
+    )
+
     return parser.parse_args()
+
+
+def copy_resource_dir(source_path, dest_path: Path):
+    """Recursively copy a resource directory to destination."""
+    dest_path.mkdir(parents=True, exist_ok=True)
+
+    for item in source_path.iterdir():
+        dest_item = dest_path / item.name
+        if item.is_file():
+            # Skip __pycache__ and .pyc files
+            if item.name.endswith('.pyc') or item.name == '__pycache__':
+                continue
+            # Read and write file content
+            content = item.read_bytes()
+            dest_item.write_bytes(content)
+        elif item.is_dir():
+            if item.name == '__pycache__':
+                continue
+            copy_resource_dir(item, dest_item)
+
+
+def init_examples(template: str = "all"):
+    """Initialize example templates in current directory."""
+    available = ["cpmpy", "clingo", "regex"]
+
+    if template != "all" and template not in available:
+        print(f"Error: Unknown template '{template}'")
+        print(f"Available templates: {', '.join(available)}, all")
+        sys.exit(1)
+
+    templates = available if template == "all" else [template]
+
+    # Get examples from package
+    examples_pkg = resources.files("agentic_python_coder.examples")
+
+    output_dir = Path("coder-examples")
+
+    for tmpl in templates:
+        source = examples_pkg.joinpath(tmpl)
+        dest = output_dir / tmpl
+
+        if dest.exists():
+            print(f"  {tmpl}/ already exists, skipping")
+            continue
+
+        copy_resource_dir(source, dest)
+        print(f"  {tmpl}/ created")
+
+    print(f"\nExamples initialized in: {output_dir.absolute()}")
+    print("\nUsage:")
+    print(f"  coder --with cpmpy --project {output_dir}/cpmpy/cpmpy.md --task {output_dir}/cpmpy/sample_tasks/n_queens.md")
 
 
 def validate_packages(packages):
@@ -312,6 +373,12 @@ def main():
         builtins.print = functools.partial(builtins._original_print, flush=True)
 
     args = parse_args()
+
+    # Handle --init command
+    if args.init:
+        print("Initializing example templates...")
+        init_examples(args.init)
+        sys.exit(0)
 
     # Resolve paths before potential chdir
     task_file_path = None

@@ -21,7 +21,7 @@ For details on architecture and constraint modelling applications, see [[Szeider
 
 ```bash
 # Install as CLI tool
-uv tool install git+https://github.com/szeider/agentic-python-coder
+uv tool install agentic-python-coder
 
 # Set up API key
 mkdir -p ~/.config/coder
@@ -32,11 +32,16 @@ echo 'OPENROUTER_API_KEY="your-key-here"' > ~/.config/coder/.env
 
 ```bash
 # Add to your project
-uv add git+https://github.com/szeider/agentic-python-coder
+uv add agentic-python-coder
 
 # Or with pip
-pip install git+https://github.com/szeider/agentic-python-coder
+uv pip install agentic-python-coder
 ```
+
+API key options:
+- Pass directly: `solve_task(..., api_key="sk-or-...")`
+- Environment variable: `export OPENROUTER_API_KEY="sk-or-..."`
+- Config file: `~/.config/coder/.env` (same as CLI)
 
 ## Quick Start
 
@@ -49,8 +54,11 @@ coder "Create a function that calculates factorial"
 # Task from file
 coder --task problem.md
 
+# Initialize example templates (one-time)
+coder --init
+
 # With packages and project template
-coder --with cpmpy --project examples/cpmpy/cpmpy.md "Solve 8-queens"
+coder --with cpmpy --project coder-examples/cpmpy/cpmpy.md "Solve 8-queens"
 ```
 
 ### Library Usage
@@ -167,6 +175,7 @@ coder -i
 | Flag | Description |
 |------|-------------|
 | `--version`, `-V` | Show version and exit |
+| `--init [TEMPLATE]` | Initialize example templates (cpmpy, clingo, regex, or all) |
 | `--task`, `-t FILE` | Load task from markdown file |
 | `--model MODEL` | Model to use (default: sonnet) |
 | `--project`, `-p FILE` | Project template for domain-specific prompts |
@@ -192,14 +201,28 @@ coder --model gpt "task"        # GPT-5
 
 ### Project Templates
 
-Domain-specific templates improve results:
+Domain-specific templates improve results. First, initialize the examples:
+
+```bash
+# Initialize all example templates (creates coder-examples/ directory)
+coder --init
+
+# Or initialize only specific templates
+coder --init cpmpy
+```
+
+Then use them:
 
 ```bash
 # Constraint programming
-coder --with cpmpy --project examples/cpmpy/cpmpy.md "Solve 8-queens"
+coder --with cpmpy --project coder-examples/cpmpy/cpmpy.md "Solve 8-queens"
+
+# Run a sample task
+coder --with cpmpy --project coder-examples/cpmpy/cpmpy.md \
+      --task coder-examples/cpmpy/sample_tasks/n_queens.md
 
 # Answer Set Programming
-coder --with clingo --project examples/clingo/clingo.md "Model bird flight"
+coder --with clingo --project coder-examples/clingo/clingo.md "Model bird flight"
 ```
 
 ### Interactive Mode
@@ -211,7 +234,7 @@ Interactive mode (`-i`) maintains a persistent session for multi-turn conversati
 coder -i
 
 # With project template
-coder -i --project examples/cpmpy/cpmpy.md --with cpmpy
+coder -i --project coder-examples/cpmpy/cpmpy.md --with cpmpy
 ```
 
 **Features:**

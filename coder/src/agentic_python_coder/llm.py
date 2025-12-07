@@ -12,7 +12,7 @@ MODEL_REGISTRY = {
     "sonnet": "anthropic/claude-sonnet-4.5",
     "opus": "anthropic/claude-opus-4.5",
     "default": "anthropic/claude-sonnet-4.5",
-    "grok": "x-ai/grok-code-fast-1",
+    "grok": "x-ai/grok-4.1-fast",
     "qwen": "qwen/qwen3-coder",
     "gemini": "google/gemini-2.5-pro",
     "gpt": "openai/gpt-5",
