@@ -164,7 +164,11 @@ TRASH/
 LOCAL/
 ASP/
 CPBENCH/
+CPMPY/
 PAPER/
+PAPER-ASP/
+ZEBRA/
+.mcp.json
 examples/cpmpy/cpmpy_v*.md
 examples/cpmpy/cpmpy.md.backup-*
 examples/clingo/clingo_v*.md
