@@ -1,0 +1,8 @@
+{
+  "path": "google/gemini-2.5-pro",
+  "temperature": 0.3,
+  "max_tokens": 2048,
+  "streaming": true,
+  "top_p": 0.9,
+  "request_timeout": 60
+}

@@ -1,6 +1,6 @@
 """Python Coding Agent - A minimal coding assistant using LangGraph and OpenRouter."""
 
-__version__ = "2.0.1"
+__version__ = "2.1.0"
 
 # High-level API (recommended for most users)
 from agentic_python_coder.runner import solve_task
@@ -14,7 +14,12 @@ from agentic_python_coder.agent import (
 )
 
 # LLM utilities
-from agentic_python_coder.llm import get_openrouter_llm, MODEL_REGISTRY, MODEL_STRING
+from agentic_python_coder.llm import (
+    get_openrouter_llm,
+    load_model_config,
+    list_available_models,
+    DEFAULT_MODEL,
+)
 
 __all__ = [
     # Version
@@ -28,6 +33,7 @@ __all__ = [
     "DEFAULT_STEP_LIMIT",
     # LLM
     "get_openrouter_llm",
-    "MODEL_REGISTRY",
-    "MODEL_STRING",
+    "load_model_config",
+    "list_available_models",
+    "DEFAULT_MODEL",
 ]

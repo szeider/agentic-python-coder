@@ -1,0 +1,7 @@
+{
+  "path": "x-ai/grok-4.1-fast",
+  "temperature": 0.15,
+  "max_tokens": 2000,
+  "streaming": true,
+  "top_p": 0.9
+}

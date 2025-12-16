@@ -1,0 +1,6 @@
+{
+  "path": "openai/gpt-5",
+  "max_tokens": 3000,
+  "streaming": true,
+  "no_sampling_params": true
+}

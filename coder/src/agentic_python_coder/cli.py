@@ -4,7 +4,6 @@ import argparse
 import os
 import sys
 import re
-import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any
 from importlib import resources
@@ -24,7 +23,7 @@ from agentic_python_coder.project_md import (
     check_packages_available,
     create_project_prompt,
 )
-from agentic_python_coder.llm import MODEL_STRING, MODEL_REGISTRY
+from agentic_python_coder.llm import DEFAULT_MODEL, list_available_models, load_model_config
 from agentic_python_coder import __version__
 
 
@@ -107,7 +106,7 @@ def parse_args():
         help="Path to task file (creates {basename}_code.py and {basename}.jsonl)",
     )
 
-    parser.add_argument("--model", help=f"Model to use (default: {MODEL_STRING})")
+    parser.add_argument("--model", help=f"Model name or JSON file (default: {DEFAULT_MODEL})")
 
     parser.add_argument(
         "--interactive", "-i", action="store_true", help="Interactive mode"
@@ -239,13 +238,17 @@ def validate_packages(packages):
 
 
 def validate_model(model):
-    """Validate model name."""
-    if model and model not in MODEL_REGISTRY and "/" not in model:
-        available = sorted([m for m in MODEL_REGISTRY.keys() if m != "default"])
-        print(f"Error: Unknown model: '{model}'")
-        print("\nAvailable models:")
-        for m in available:
+    """Validate model name or JSON file."""
+    if not model:
+        return
+    try:
+        load_model_config(model)
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        print("\nAvailable built-in models:")
+        for m in list_available_models():
             print(f"  - {m}")
+        print("\nOr provide a path to a custom model JSON file.")
         sys.exit(1)
 
 
@@ -434,7 +437,7 @@ def main():
             if not args.quiet:
                 if args.with_packages:
                     print(f"Dynamic packages: {', '.join(args.with_packages)}")
-                print(f"Creating agent with model: {args.model or MODEL_STRING}")
+                print(f"Creating agent with model: {args.model or DEFAULT_MODEL}")
 
             task_basename = task_file_path.stem if task_file_path else None
 

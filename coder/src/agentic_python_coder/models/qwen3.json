@@ -1,0 +1,7 @@
+{
+  "path": "qwen/qwen3-coder",
+  "temperature": 0.15,
+  "max_tokens": 2048,
+  "streaming": true,
+  "top_p": 0.9
+}

@@ -70,7 +70,7 @@ import agentic_python_coder as coder
 messages, stats, log_path = coder.solve_task(
     "Write a fibonacci function",
     working_directory="/tmp/workspace",
-    model="sonnet",
+    model="sonnet45",
     quiet=True,  # Suppress console output
 )
 
@@ -93,7 +93,7 @@ from agentic_python_coder import solve_task
 messages, stats, log_path = solve_task(
     task="Your task description",
     working_directory=".",           # Where to run and save files
-    model=None,                      # Model alias: "sonnet", "opus", "deepseek", etc.
+    model=None,                      # Model name: "sonnet45", "opus45", or JSON file
     system_prompt=None,              # Custom system prompt (string)
     system_prompt_path=None,         # Path to system prompt file
     project_prompt=None,             # Domain-specific context
@@ -123,7 +123,7 @@ from agentic_python_coder import create_coding_agent, run_agent, get_final_respo
 agent = create_coding_agent(
     working_directory="/tmp/workspace",
     system_prompt="You are a Python expert.",
-    model="deepseek",
+    model="deepseek31",
     with_packages=["pandas"],
 )
 
@@ -140,14 +140,17 @@ print(get_final_response(messages2))
 Get a configured LangChain LLM instance for custom use.
 
 ```python
-from agentic_python_coder import get_openrouter_llm, MODEL_REGISTRY
+from agentic_python_coder import get_openrouter_llm, list_available_models
 
-# Get LLM by alias
-llm = get_openrouter_llm(model="sonnet")
+# Get LLM by model name
+llm = get_openrouter_llm(model="sonnet45")
 
 # See available models
-print(MODEL_REGISTRY.keys())
-# dict_keys(['deepseek', 'sonnet', 'opus', 'default', 'grok', 'qwen', 'gemini', 'gpt'])
+print(list_available_models())
+# ['deepseek31', 'gemini25', 'gpt5', 'grok41', 'opus45', 'qwen3', 'sonnet45']
+
+# Use a custom model JSON file
+llm = get_openrouter_llm(model="./mymodel.json")
 ```
 
 ---
@@ -177,7 +180,7 @@ coder -i
 | `--version`, `-V` | Show version and exit |
 | `--init [TEMPLATE]` | Initialize example templates (cpmpy, clingo, regex, or all) |
 | `--task`, `-t FILE` | Load task from markdown file |
-| `--model MODEL` | Model to use (default: sonnet) |
+| `--model MODEL` | Model name or JSON file (default: sonnet45) |
 | `--project`, `-p FILE` | Project template for domain-specific prompts |
 | `--with PACKAGE` | Add packages dynamically (repeatable) |
 | `--dir`, `-d DIR` | Working directory |
@@ -190,13 +193,17 @@ coder -i
 ### Model Selection
 
 ```bash
-coder --model sonnet "task"     # Claude Sonnet 4.5 (default)
-coder --model opus "task"       # Claude Opus 4.5
-coder --model deepseek "task"   # DeepSeek v3.1
-coder --model grok "task"       # X.AI Grok
-coder --model qwen "task"       # Qwen3 Coder
-coder --model gemini "task"     # Gemini Pro 2.5
-coder --model gpt "task"        # GPT-5
+# Built-in models (versioned names)
+coder --model sonnet45 "task"   # Claude Sonnet 4.5 (default)
+coder --model opus45 "task"     # Claude Opus 4.5
+coder --model deepseek31 "task" # DeepSeek v3.1
+coder --model grok41 "task"     # X.AI Grok 4.1
+coder --model qwen3 "task"      # Qwen3 Coder
+coder --model gemini25 "task"   # Gemini Pro 2.5
+coder --model gpt5 "task"       # GPT-5
+
+# Custom model (JSON file)
+coder --model ./mymodel.json "task"
 ```
 
 ### Project Templates

@@ -1,107 +1,16 @@
 """LLM configuration for OpenRouter."""
 
+import json
 import os
-from typing import Optional
-from langchain_openai import ChatOpenAI
-from dotenv import load_dotenv
+import sys
 from pathlib import Path
+from typing import Any
 
-# Model aliases to full OpenRouter paths
-MODEL_REGISTRY = {
-    "deepseek": "deepseek/deepseek-chat-v3.1",
-    "sonnet": "anthropic/claude-sonnet-4.5",
-    "opus": "anthropic/claude-opus-4.5",
-    "default": "anthropic/claude-sonnet-4.5",
-    "grok": "x-ai/grok-4.1-fast",
-    "qwen": "qwen/qwen3-coder",
-    "gemini": "google/gemini-2.5-pro",
-    "gpt": "openai/gpt-5",
-}
+from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
 
-# Model-specific configurations
-MODEL_CONFIGS = {
-    "deepseek/deepseek-chat-v3.1": {
-        "temperature": 0.2,  # Low for deterministic code generation with tool calls
-        "max_tokens": 8192,  # Beta API supports up to 8192
-        "streaming": True,
-        "context_window": 128000,  # Full context window
-        "top_p": 1.0,  # Keep at 1.0 with low temperature
-        "frequency_penalty": 0,  # Don't use for coding
-        "presence_penalty": 0,  # Don't use for coding
-        "model_kwargs": {
-            "stream_options": {"include_usage": True},
-        },
-    },
-    "anthropic/claude-sonnet-4.5": {
-        "temperature": 0.0,  # Default for deterministic output
-        "streaming": True,
-        "max_tokens": 16384,  # Sonnet 4.5 supports up to 64K
-        "model_kwargs": {"stream_options": {"include_usage": True}},
-    },
-    "anthropic/claude-opus-4.5": {
-        "temperature": 0.0,
-        "streaming": True,
-        "max_tokens": 16384,  # Opus 4.5 supports up to 32K output
-        "model_kwargs": {"stream_options": {"include_usage": True}},
-    },
-    # Other model configurations
-    "x-ai/grok-code-fast-1": {
-        "temperature": 0.15,
-        "max_tokens": 2000,
-        "streaming": True,
-        "context_window": 256000,
-        "top_p": 0.9,
-        # Note: Grok doesn't accept frequency_penalty or presence_penalty
-        "model_kwargs": {
-            "stream_options": {"include_usage": True}
-            # Reasoning mode may be added later when supported
-        },
-    },
-    "qwen/qwen3-coder": {
-        "temperature": 0.15,
-        "max_tokens": 2048,
-        "streaming": True,
-        "context_window": 256000,
-        "top_p": 0.9,
-        "model_kwargs": {
-            "stream_options": {"include_usage": True}
-            # Provider filtering would be added via headers if needed
-        },
-    },
-    "google/gemini-2.5-pro": {
-        "temperature": 0.3,
-        "max_tokens": 2048,  # Will be mapped to max_output_tokens
-        "streaming": True,
-        "context_window": 1048576,
-        "top_p": 0.9,
-        # Note: No top_k or set to 64 (Google's fixed value)
-        "request_timeout": 60,  # Handle slow responses on free tier
-        "model_kwargs": {"stream_options": {"include_usage": True}},
-    },
-    "openai/gpt-5": {
-        # NO temperature, top_p, or penalty parameters for GPT-5
-        "max_tokens": 3000,
-        "streaming": True,
-        "context_window": 400000,
-        "model_kwargs": {
-            "stream_options": {"include_usage": True},
-            "parallel_tool_calls": False,
-            # Additional parameters can be added when supported
-        },
-    },
-}
-
-# Default configuration for unknown models
-DEFAULT_CONFIG = {
-    "temperature": 0.0,
-    "max_tokens": 4096,
-    "streaming": True,
-    "context_window": 32000,
-    "model_kwargs": {"stream_options": {"include_usage": True}},
-}
-
-# Keep old constant for backward compatibility
-MODEL_STRING = "anthropic/claude-sonnet-4.5"
+# Default model name (without .json)
+DEFAULT_MODEL = "sonnet45"
 
 
 def get_api_key() -> str:
@@ -113,79 +22,130 @@ def get_api_key() -> str:
     Raises:
         ValueError: If no API key found
     """
-    # Load from ~/.config/coder/.env
+    # Load from ~/.config/coder/.env (don't override shell env vars)
     config_env = Path.home() / ".config" / "coder" / ".env"
     if config_env.exists():
-        load_dotenv(dotenv_path=config_env, override=True)
+        load_dotenv(dotenv_path=config_env, override=False)
 
     # Get API key from environment
     api_key = os.getenv("OPENROUTER_API_KEY")
 
     if not api_key:
-        print("Warning: No API key found. Set up with:")
-        print("  mkdir -p ~/.config/coder")
-        print("  echo 'OPENROUTER_API_KEY=sk-or-...' > ~/.config/coder/.env")
-        print("\nOr use: --api-key sk-or-...")
+        print("Warning: No API key found. Set up with:", file=sys.stderr)
+        print("  mkdir -p ~/.config/coder", file=sys.stderr)
+        print("  echo 'OPENROUTER_API_KEY=sk-or-...' > ~/.config/coder/.env", file=sys.stderr)
+        print("\nOr use: --api-key sk-or-...", file=sys.stderr)
         raise ValueError("OPENROUTER_API_KEY not configured")
 
     return api_key
 
 
+def _load_json_file(path: Path, model: str) -> dict[str, Any]:
+    """Load and validate a model JSON file."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            config = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in model config '{model}': {e}") from e
+
+    if "path" not in config:
+        raise ValueError(f"Model config '{model}' missing required key: 'path'")
+
+    return config
+
+
+def load_model_config(model: str) -> dict[str, Any]:
+    """Load model configuration from JSON file.
+
+    Lookup order:
+    1. If model ends with .json, treat as explicit path
+    2. Local file: ./{model}.json
+    3. Bundled default: <package>/models/{model}.json
+
+    Args:
+        model: Model name (e.g., "sonnet45") or path to JSON file
+
+    Returns:
+        Model configuration dict
+
+    Raises:
+        FileNotFoundError: If model config not found
+        ValueError: If JSON is invalid or missing required keys
+    """
+    # Explicit JSON path
+    if model.endswith(".json"):
+        path = Path(model).expanduser()
+        if not path.exists():
+            raise FileNotFoundError(f"Model config not found: {model}")
+        return _load_json_file(path, model)
+
+    # Local override: ./{model}.json
+    local_path = Path(f"./{model}.json")
+    if local_path.exists():
+        return _load_json_file(local_path, model)
+
+    # Bundled default: <package>/models/{model}.json
+    package_dir = Path(__file__).parent
+    bundled_path = package_dir / "models" / f"{model}.json"
+    if bundled_path.exists():
+        return _load_json_file(bundled_path, model)
+
+    # List available models for error message
+    available = list_available_models()
+    raise FileNotFoundError(
+        f"Model '{model}' not found. Available: {', '.join(available)}"
+    )
+
+
+def list_available_models() -> list[str]:
+    """List all available model names (bundled defaults).
+
+    Returns:
+        List of model names (without .json extension)
+    """
+    package_dir = Path(__file__).parent
+    models_dir = package_dir / "models"
+    if not models_dir.exists():
+        return []
+    return sorted(p.stem for p in models_dir.glob("*.json"))
+
+
 def get_openrouter_llm(
-    model: str = "default",
-    temperature: Optional[float] = None,
-    api_key: Optional[str] = None,
+    model: str = DEFAULT_MODEL,
+    api_key: str | None = None,
     verbose: bool = False,
 ) -> ChatOpenAI:
     """Create a fully configured OpenRouter LLM instance.
-    Special handling for GPT-5 which doesn't accept sampling parameters.
 
     Args:
-        model: Model alias (e.g., "deepseek", "claude") or full path
-        temperature: Optional temperature override
+        model: Model name (e.g., "sonnet45") or path to JSON file
         api_key: Optional API key
-        verbose: If True, print model info to console (default False for library use)
+        verbose: If True, print model info to console
 
     Returns:
         Fully configured ChatOpenAI instance
 
     Raises:
-        ValueError: If model alias is not recognized
+        FileNotFoundError: If model config not found
+        ValueError: If API key not configured
     """
-    # Handle direct model path (backward compatibility)
-    if "/" in model:
-        model_path = model
-        # Get config for this path or use default
-        config = MODEL_CONFIGS.get(model_path, DEFAULT_CONFIG.copy())
-    else:
-        # Resolve alias to full path
-        if model not in MODEL_REGISTRY:
-            available = ", ".join(sorted(MODEL_REGISTRY.keys()))
-            raise ValueError(f"Unknown model: '{model}'. Available models: {available}")
+    # Load config from JSON
+    config = load_model_config(model)
+    model_path = config["path"]
 
-        model_path = MODEL_REGISTRY[model]
-
-        # Get hardcoded config for this model
-        config = MODEL_CONFIGS.get(model_path, DEFAULT_CONFIG.copy())
-
-    # Print model info only if verbose
-    if verbose and model != "default":
+    if verbose:
         print(f"Using model: {model_path}")
         if os.getenv("CODER_VERBOSE"):
-            # Special handling for GPT-5 which has no temperature
-            if model_path == "openai/gpt-5":
-                print(f"   Max tokens: {config.get('max_tokens', 'default')}")
-                print(f"   Streaming: {config['streaming']}")
-            else:
-                print(f"   Temperature: {config.get('temperature', 'default')}")
-                print(f"   Max tokens: {config.get('max_tokens', 'default')}")
-                print(f"   Streaming: {config['streaming']}")
+            for key, value in config.items():
+                if key != "path":
+                    print(f"   {key}: {value}")
 
     # Get API key
     if not api_key:
         api_key = get_api_key()
 
     # Create base kwargs
+    streaming = config.get("streaming", True)
     llm_kwargs = {
         "model": model_path,
         "openai_api_key": api_key,
@@ -194,37 +154,37 @@ def get_openrouter_llm(
             "HTTP-Referer": "https://github.com/szeider/agentic-python-coder",
             "X-Title": "Agentic Python Coder",
         },
-        "streaming": config["streaming"],
-        "model_kwargs": config.get("model_kwargs", {}),
+        "streaming": streaming,
     }
 
-    # Special case for GPT-5: NO sampling parameters
-    if model_path == "openai/gpt-5":
-        # Only add max_tokens for GPT-5
+    # Only include stream_options when streaming is enabled
+    if streaming:
+        llm_kwargs["model_kwargs"] = {"stream_options": {"include_usage": True}}
+    else:
+        llm_kwargs["model_kwargs"] = {}
+
+    # Handle models that don't accept sampling parameters (e.g., GPT-5)
+    if config.get("no_sampling_params"):
         if "max_tokens" in config:
             llm_kwargs["max_tokens"] = config["max_tokens"]
     else:
-        # All other models get standard parameters
-        llm_kwargs["temperature"] = config.get("temperature", 0.0)
-        if temperature is not None:  # Allow override
-            llm_kwargs["temperature"] = temperature
-
-        # Add optional parameters
+        # Standard parameters
+        if "temperature" in config:
+            llm_kwargs["temperature"] = config["temperature"]
         if "max_tokens" in config:
             llm_kwargs["max_tokens"] = config["max_tokens"]
         if "top_p" in config:
             llm_kwargs["top_p"] = config["top_p"]
         if "top_k" in config:
-            llm_kwargs["top_k"] = config["top_k"]
+            # Pass via model_kwargs for OpenRouter compatibility
+            llm_kwargs["model_kwargs"]["top_k"] = config["top_k"]
         if "frequency_penalty" in config:
             llm_kwargs["frequency_penalty"] = config["frequency_penalty"]
         if "presence_penalty" in config:
             llm_kwargs["presence_penalty"] = config["presence_penalty"]
 
-    # Add request_timeout for models that need it (e.g., Gemini)
+    # Add request_timeout for models that need it
     if "request_timeout" in config:
         llm_kwargs["request_timeout"] = config["request_timeout"]
 
-    llm = ChatOpenAI(**llm_kwargs)
-
-    return llm
+    return ChatOpenAI(**llm_kwargs)
