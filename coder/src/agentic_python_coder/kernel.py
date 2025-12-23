@@ -1,17 +1,17 @@
 """IPykernel-based Python execution for persistent sessions."""
 
+import atexit
 import json
 import logging
+import os
 import shutil
 import threading
+import time
 import warnings
-import atexit
-from typing import Dict, Optional, List
-from jupyter_client import KernelManager
 from queue import Empty
+from typing import Dict, List, Optional
 
-# Configure logging - use environment variable or default to WARNING
-import os
+from jupyter_client import KernelManager
 
 log_level = os.environ.get("CODER_LOG_LEVEL", "WARNING").upper()
 logging.basicConfig(
@@ -177,27 +177,31 @@ warnings.filterwarnings('ignore', message='.*pkg_resources.*', category=Deprecat
         except Exception:
             pass  # Best effort cleanup
 
-    def execute(self, code: str, poll_timeout: int = 30) -> Dict[str, str]:
-        """Execute code and return output.
+    def execute(self, code: str, deadline_timeout: int = 60) -> Dict[str, str]:
+        """Execute code and wait for completion.
 
         Args:
             code: Python code to execute
-            poll_timeout: Timeout in seconds for each message poll (not total execution time)
+            deadline_timeout: Hard deadline in seconds for entire execution
 
         Returns:
             Dict with stdout, stderr, result, and error fields
         """
         # Send the execution request (silent=False to get execute_result)
-        msg_id = self.kc.execute(code, silent=False, store_history=True)
+        # allow_stdin=False prevents kernel from requesting input
+        msg_id = self.kc.execute(
+            code, silent=False, store_history=True, allow_stdin=False
+        )
 
         # Collect output
         output = {"stdout": "", "stderr": "", "result": None, "error": None}
 
-        # Wait for and collect messages
-        execution_state = "busy"
-        while execution_state != "idle":
+        # Wait for and collect messages with hard deadline
+        deadline = time.monotonic() + deadline_timeout
+
+        while time.monotonic() < deadline:
             try:
-                msg = self.kc.get_iopub_msg(timeout=poll_timeout)
+                msg = self.kc.get_iopub_msg(timeout=1.0)
                 msg_type = msg["header"]["msg_type"]
                 content = msg["content"]
 
@@ -217,10 +221,10 @@ warnings.filterwarnings('ignore', message='.*pkg_resources.*', category=Deprecat
                     # Include traceback for debugging
                     if content.get("traceback"):
                         output["error"] += "\n" + "\n".join(content["traceback"])
-                elif msg_type == "status":
-                    execution_state = content["execution_state"]
+                elif msg_type == "status" and content["execution_state"] == "idle":
+                    break  # Only exit on idle status
             except Empty:
-                break
+                continue  # Keep waiting, don't break
 
         return output
 

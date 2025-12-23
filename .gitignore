@@ -153,6 +153,7 @@ uv.lock
 
 # Project specific
 CLAUDE-archive.md
+PROCESS_NOTES.md
 conversation_log.json
 coder_output.log
 task.md
@@ -173,10 +174,10 @@ examples/cpmpy/cpmpy_v*.md
 examples/cpmpy/cpmpy.md.backup-*
 examples/clingo/clingo_v*.md
 
-# Test files and folders
-test-*/
-test_*.py
-test_*/
+# Test files and folders (root level only)
+/test-*/
+/test_*.py
+/test_*/
 PROBLEM.md
 *.log
 
