@@ -152,6 +152,7 @@ cython_debug/
 uv.lock
 
 # Project specific
+coder-examples/
 CLAUDE-archive.md
 PROCESS_NOTES.md
 conversation_log.json

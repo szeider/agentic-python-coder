@@ -15,27 +15,28 @@ def test_imports_from_package():
         run_agent,
         get_final_response,
         get_openrouter_llm,
-        MODEL_REGISTRY,
-        MODEL_STRING,
+        list_available_models,
+        DEFAULT_MODEL,
     )
 
-    assert __version__ == "2.0.0"
+    assert __version__ == "2.2.1"
     assert callable(solve_task)
     assert callable(create_coding_agent)
     assert callable(run_agent)
     assert callable(get_final_response)
     assert callable(get_openrouter_llm)
-    assert isinstance(MODEL_REGISTRY, dict)
-    assert isinstance(MODEL_STRING, str)
+    assert callable(list_available_models)
+    assert isinstance(DEFAULT_MODEL, str)
 
 
 def test_model_registry():
-    """Test that MODEL_REGISTRY contains expected models."""
-    from agentic_python_coder import MODEL_REGISTRY
+    """Test that list_available_models returns expected models."""
+    from agentic_python_coder import list_available_models
 
-    expected_models = ["sonnet", "opus", "deepseek", "grok", "qwen", "gemini", "gpt", "default"]
+    models = list_available_models()
+    expected_models = ["sonnet45", "opus45", "deepseek31", "grok41", "qwen3", "gemini25", "gpt5"]
     for model in expected_models:
-        assert model in MODEL_REGISTRY, f"Missing model: {model}"
+        assert model in models, f"Missing model: {model}"
 
 
 def test_create_agent_with_string_prompt():
@@ -46,7 +47,7 @@ def test_create_agent_with_string_prompt():
         agent = create_coding_agent(
             working_directory=tmpdir,
             system_prompt="You are a helpful coding assistant.",
-            model="sonnet",
+            model="sonnet45",
         )
         assert agent is not None
         assert agent._coder_metadata["working_directory"] == tmpdir
@@ -60,6 +61,7 @@ def test_create_agent_metadata():
         agent = create_coding_agent(
             working_directory=tmpdir,
             system_prompt="Test",
+            model="sonnet45",
             with_packages=["numpy", "pandas"],
             task_basename="test_task",
         )
@@ -104,7 +106,7 @@ def test_verbose_false_suppresses_output():
             agent = create_coding_agent(
                 working_directory=tmpdir,
                 system_prompt="Test",
-                model="sonnet",
+                model="sonnet45",
                 verbose=False,  # Should suppress output
             )
             output = sys.stdout.getvalue()
@@ -118,13 +120,14 @@ def test_verbose_false_suppresses_output():
 def test_global_state_reset():
     """Test that global state is reset between agent creations."""
     from agentic_python_coder import create_coding_agent
-    from agentic_python_coder.tools import _todos, _reported_issues, _task_basename
+    from agentic_python_coder.tools import _todos, _task_basename
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create first agent
         agent1 = create_coding_agent(
             working_directory=tmpdir,
             system_prompt="Test",
+            model="sonnet45",
             task_basename="task1",
         )
 
@@ -132,6 +135,7 @@ def test_global_state_reset():
         agent2 = create_coding_agent(
             working_directory=tmpdir,
             system_prompt="Test",
+            model="sonnet45",
             task_basename="task2",
         )
 

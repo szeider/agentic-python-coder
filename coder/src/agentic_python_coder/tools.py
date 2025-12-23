@@ -221,54 +221,11 @@ def save_code(code: str) -> str:
         return error_response(f"Error saving code: {str(e)}")
 
 
-_reported_issues = []
-
-
-@tool
-def report_issue(text: str) -> str:
-    """Report an environment or specification issue (fileless mode).
-
-    Use this ONLY for:
-    - Missing packages or import errors
-    - Unclear task specifications
-    - Environment setup problems
-
-    Do NOT use for:
-    - Logic errors in your code
-    - Failed test cases
-    - Debugging information
-
-    Args:
-        text: Description of the issue
-
-    Returns:
-        JSON with success status
-    """
-    try:
-        global _reported_issues
-
-        # Store the issue in memory to be included when log is saved
-        _reported_issues.append({"type": "agent_feedback", "content": text})
-
-        return success_response(
-            "Issue reported and will be included in the log", reported=True
-        )
-    except Exception as e:
-        return error_response(f"Error reporting issue: {str(e)}")
-
-
-def get_reported_issues():
-    """Get all reported issues for inclusion in the log."""
-    global _reported_issues
-    return _reported_issues
-
-
 def reset_global_state():
     """Reset all global state to avoid accumulation across runs.
 
     Called by create_coding_agent() to ensure clean state for each new agent.
     """
-    global _todos, _task_basename, _reported_issues
+    global _todos, _task_basename
     _todos = []
     _task_basename = None
-    _reported_issues = []

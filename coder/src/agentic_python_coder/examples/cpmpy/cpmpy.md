@@ -44,3 +44,5 @@ else:
   ```
 
 That's it. Read the problem carefully, model it declaratively, and let CPMpy find the optimal solution.
+
+**Critical:** Use CPMpy constraints only—never implement search algorithms (BFS, DFS, etc.). Always verify your solution satisfies all problem constraints.

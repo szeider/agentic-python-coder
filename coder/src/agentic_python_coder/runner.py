@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Optional, List, Any, Dict
 
 from agentic_python_coder.agent import create_coding_agent, run_agent
-from agentic_python_coder.tools import get_reported_issues
 
 
 def get_system_prompt_path(todo: bool = False) -> Path:
@@ -113,16 +112,6 @@ def save_conversation_log(
                             )
                             + "\n"
                         )
-                    elif tool_name == "report_issue":
-                        f.write(
-                            json.dumps(
-                                {
-                                    "event": "report_issue",
-                                    "issue": tool_args.get("text", "")[:200],
-                                }
-                            )
-                            + "\n"
-                        )
                     else:
                         f.write(
                             json.dumps({"event": "tool_call", "tool": tool_name}) + "\n"
@@ -162,28 +151,12 @@ def save_conversation_log(
                 + "\n"
             )
 
-        # Agent feedback
-        reported_issues = get_reported_issues()
-        if reported_issues:
-            for issue in reported_issues:
-                f.write(
-                    json.dumps(
-                        {
-                            "event": "agent_feedback",
-                            "content": issue.get("content", ""),
-                        }
-                    )
-                    + "\n"
-                )
-
         # Complete event
         f.write(
             json.dumps(
                 {
                     "event": "complete",
-                    "status": "success"
-                    if not reported_issues
-                    else "success_with_issues",
+                    "status": "success",
                 }
             )
             + "\n"

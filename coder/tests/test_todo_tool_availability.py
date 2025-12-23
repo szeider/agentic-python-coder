@@ -12,6 +12,7 @@ def test_agent_tools_without_todo():
         agent = create_coding_agent(
             working_directory=tmpdir,
             system_prompt="Test prompt",
+            model="sonnet45",
             todo=False,
         )
         assert agent is not None
@@ -24,6 +25,7 @@ def test_agent_tools_with_todo():
         agent = create_coding_agent(
             working_directory=tmpdir,
             system_prompt="Test prompt",
+            model="sonnet45",
             todo=True,
         )
         assert agent is not None

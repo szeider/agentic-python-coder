@@ -10,7 +10,6 @@ from agentic_python_coder.tools import (
     todo_write,
     python_exec,
     save_code,
-    report_issue,
     working_dir,
     set_task_basename,
     reset_global_state,
@@ -80,9 +79,9 @@ def create_coding_agent(
 
     # Minimal tool set
     if todo:
-        tools = [python_exec, save_code, report_issue, todo_write]
+        tools = [python_exec, save_code, todo_write]
     else:
-        tools = [python_exec, save_code, report_issue]
+        tools = [python_exec, save_code]
 
     # Build combined prompt
     prompts = []
