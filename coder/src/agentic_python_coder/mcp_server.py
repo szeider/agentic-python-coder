@@ -30,7 +30,7 @@ server = Server("ipython_mcp")
 # Constants
 MAX_OUTPUT = 100 * 1024  # 100KB truncation limit
 MAX_TIMEOUT = 300  # Maximum allowed timeout in seconds
-INTERRUPT_GRACE_PERIOD = 0.5  # Seconds to wait after kernel interrupt
+DEFAULT_TIMEOUT = 30  # Default timeout in seconds
 KERNEL_TIMEOUT_BUFFER = 5  # Extra seconds for kernel deadline vs asyncio timeout
 
 # Async lock for session operations (default kernel management)
@@ -57,7 +57,7 @@ def get_kernel_id(arguments: dict) -> str:
 
 
 async def execute_with_timeout(
-    code: str, timeout: float = 10.0, kernel_id: str = DEFAULT_KERNEL_ID
+    code: str, timeout: float = DEFAULT_TIMEOUT, kernel_id: str = DEFAULT_KERNEL_ID
 ) -> dict:
     """Execute code with proper kernel-level timeout and interruption."""
     loop = asyncio.get_running_loop()
@@ -195,10 +195,13 @@ Two modes:
 For parallel agents: each agent calls python_reset() once to get its own kernel_id,
 then uses that ID for all python_exec calls.
 
+Note: Kernel IDs are auto-generated 8-char hex strings (e.g., "a94a7c7a").
+You cannot specify custom IDs - the system assigns them.
+
 Example workflow:
-1. python_reset(packages=["numpy"]) -> {"kernel_id": "a1b2c3d4"}
-2. python_exec(kernel_id="a1b2c3d4", code="import numpy as np")
-3. python_exec(kernel_id="a1b2c3d4", code="np.random.rand(3)")""",
+1. python_reset(packages=["numpy"]) -> {"kernel_id": "a94a7c7a"}
+2. python_exec(kernel_id="a94a7c7a", code="import numpy as np")
+3. python_exec(kernel_id="a94a7c7a", code="np.random.rand(3)")""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -281,7 +284,7 @@ async def call_tool(name: str, arguments: dict):
             elif kernel_exists(kernel_id):
                 # kernel_id provided and exists: RESET it
                 await loop.run_in_executor(
-                    None, lambda: restart_kernel(kernel_id, packages)
+                    None, lambda: restart_kernel(kernel_id, packages if packages else None)
                 )
             else:
                 # kernel_id provided but doesn't exist: error
@@ -357,7 +360,11 @@ versions
 
     elif name == "python_exec":
         code = arguments.get("code", "")
-        timeout = min(arguments.get("timeout", 30), MAX_TIMEOUT)
+        raw_timeout = arguments.get("timeout")
+        try:
+            timeout = min(float(raw_timeout), MAX_TIMEOUT) if raw_timeout is not None else DEFAULT_TIMEOUT
+        except (TypeError, ValueError):
+            timeout = DEFAULT_TIMEOUT
         kernel_id = get_kernel_id(arguments)
 
         if not code.strip():
