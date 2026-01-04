@@ -19,7 +19,7 @@ def test_imports_from_package():
         DEFAULT_MODEL,
     )
 
-    assert __version__ == "2.2.1"
+    assert __version__ == "2.3.0"
     assert callable(solve_task)
     assert callable(create_coding_agent)
     assert callable(run_agent)
@@ -103,7 +103,7 @@ def test_verbose_false_suppresses_output():
         sys.stdout = StringIO()
 
         try:
-            agent = create_coding_agent(
+            create_coding_agent(
                 working_directory=tmpdir,
                 system_prompt="Test",
                 model="sonnet45",
@@ -120,11 +120,11 @@ def test_verbose_false_suppresses_output():
 def test_global_state_reset():
     """Test that global state is reset between agent creations."""
     from agentic_python_coder import create_coding_agent
-    from agentic_python_coder.tools import _todos, _task_basename
+    from agentic_python_coder.tools import _task_basename
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create first agent
-        agent1 = create_coding_agent(
+        create_coding_agent(
             working_directory=tmpdir,
             system_prompt="Test",
             model="sonnet45",
@@ -132,7 +132,7 @@ def test_global_state_reset():
         )
 
         # Create second agent - should reset state
-        agent2 = create_coding_agent(
+        create_coding_agent(
             working_directory=tmpdir,
             system_prompt="Test",
             model="sonnet45",

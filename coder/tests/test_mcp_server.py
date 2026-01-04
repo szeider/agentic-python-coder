@@ -4,32 +4,25 @@ import pytest
 import json
 import asyncio
 
-from agentic_python_coder import mcp_server
 from agentic_python_coder.mcp_server import (
     call_tool,
     list_tools,
     truncate_output,
     MAX_OUTPUT,
 )
-from agentic_python_coder.kernel import shutdown_kernel
+from agentic_python_coder.kernel import shutdown_all_kernels
 
 
 @pytest.fixture(autouse=True)
 def reset_mcp_state():
-    """Reset MCP server state before and after each test."""
+    """Reset kernel state before and after each test."""
     # Reset before test
-    mcp_server._kernel = None
-    mcp_server._initialized = False
-    mcp_server._packages = []
-    shutdown_kernel()
+    shutdown_all_kernels()
 
     yield
 
     # Reset after test
-    mcp_server._kernel = None
-    mcp_server._initialized = False
-    mcp_server._packages = []
-    shutdown_kernel()
+    shutdown_all_kernels()
 
 
 class TestListTools:
@@ -37,13 +30,18 @@ class TestListTools:
 
     @pytest.mark.asyncio
     async def test_lists_all_tools(self):
-        """All four tools are listed."""
+        """All seven tools are listed."""
         tools = await list_tools()
         names = [t.name for t in tools]
+        # Core tools
         assert "python_exec" in names
         assert "python_reset" in names
         assert "python_status" in names
         assert "python_interrupt" in names
+        # Multi-kernel tools
+        assert "python_kernel_create" in names
+        assert "python_kernel_list" in names
+        assert "python_kernel_shutdown" in names
 
     @pytest.mark.asyncio
     async def test_python_exec_schema(self):
@@ -325,3 +323,149 @@ class TestConcurrency:
         # Both should succeed with correct results (not interleaved)
         assert data1["result"] == "1"
         assert data2["result"] == "2"
+
+
+class TestMultiKernel:
+    """Tests for multi-kernel functionality."""
+
+    @pytest.mark.asyncio
+    async def test_kernel_create_returns_id(self):
+        """python_kernel_create returns a valid kernel_id."""
+        result = await call_tool("python_kernel_create", {})
+        data = json.loads(result[0].text)
+
+        assert data["success"] is True
+        assert "kernel_id" in data
+        assert len(data["kernel_id"]) == 8  # 8-char hex
+
+    @pytest.mark.asyncio
+    async def test_kernel_create_with_explicit_id(self):
+        """python_kernel_create accepts explicit kernel_id."""
+        result = await call_tool(
+            "python_kernel_create", {"kernel_id": "abcd1234"}
+        )
+        data = json.loads(result[0].text)
+
+        assert data["success"] is True
+        assert data["kernel_id"] == "abcd1234"
+
+    @pytest.mark.asyncio
+    async def test_kernel_list_shows_created_kernels(self):
+        """python_kernel_list shows all kernels."""
+        # Create two kernels (8-char hex IDs)
+        await call_tool("python_kernel_create", {"kernel_id": "aabbcc01"})
+        await call_tool("python_kernel_create", {"kernel_id": "aabbcc02"})
+
+        result = await call_tool("python_kernel_list", {})
+        data = json.loads(result[0].text)
+
+        assert data["success"] is True
+        kernel_ids = [k["id"] for k in data["kernels"]]
+        assert "aabbcc01" in kernel_ids
+        assert "aabbcc02" in kernel_ids
+
+    @pytest.mark.asyncio
+    async def test_exec_with_kernel_id(self):
+        """python_exec can target specific kernel."""
+        # Create a kernel (8-char hex ID)
+        await call_tool("python_kernel_create", {"kernel_id": "deadbeef"})
+
+        # Execute in that kernel
+        result = await call_tool(
+            "python_exec",
+            {"code": "x = 42; x", "kernel_id": "deadbeef"},
+        )
+        data = json.loads(result[0].text)
+
+        assert data["success"] is True
+        assert data["result"] == "42"
+        assert data["kernel_id"] == "deadbeef"
+
+    @pytest.mark.asyncio
+    async def test_kernels_have_isolated_state(self):
+        """Different kernels have isolated state."""
+        # Create two kernels (8-char hex IDs)
+        await call_tool("python_kernel_create", {"kernel_id": "11111111"})
+        await call_tool("python_kernel_create", {"kernel_id": "22222222"})
+
+        # Set different values in each
+        await call_tool(
+            "python_exec",
+            {"code": "value = 'kernel1'", "kernel_id": "11111111"},
+        )
+        await call_tool(
+            "python_exec",
+            {"code": "value = 'kernel2'", "kernel_id": "22222222"},
+        )
+
+        # Check each kernel has its own value
+        r1 = await call_tool(
+            "python_exec", {"code": "value", "kernel_id": "11111111"}
+        )
+        r2 = await call_tool(
+            "python_exec", {"code": "value", "kernel_id": "22222222"}
+        )
+
+        data1 = json.loads(r1[0].text)
+        data2 = json.loads(r2[0].text)
+
+        assert data1["result"] == "'kernel1'"
+        assert data2["result"] == "'kernel2'"
+
+    @pytest.mark.asyncio
+    async def test_kernel_shutdown(self):
+        """python_kernel_shutdown removes kernel."""
+        # Create and shutdown a kernel (8-char hex ID)
+        await call_tool("python_kernel_create", {"kernel_id": "33333333"})
+        result = await call_tool(
+            "python_kernel_shutdown", {"kernel_id": "33333333"}
+        )
+        data = json.loads(result[0].text)
+
+        assert data["success"] is True
+
+        # Verify it's gone
+        list_result = await call_tool("python_kernel_list", {})
+        list_data = json.loads(list_result[0].text)
+        kernel_ids = [k["id"] for k in list_data["kernels"]]
+        assert "33333333" not in kernel_ids
+
+    @pytest.mark.asyncio
+    async def test_cannot_shutdown_default_kernel(self):
+        """Cannot shutdown default kernel via python_kernel_shutdown."""
+        # First, auto-create default kernel
+        await call_tool("python_exec", {"code": "1+1"})
+
+        # Try to shutdown default kernel
+        result = await call_tool(
+            "python_kernel_shutdown", {"kernel_id": "_default"}
+        )
+        data = json.loads(result[0].text)
+
+        assert data["success"] is False
+        assert "python_reset" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_exec_in_nonexistent_kernel_fails(self):
+        """python_exec fails for non-existent kernel."""
+        result = await call_tool(
+            "python_exec",
+            {"code": "1+1", "kernel_id": "44444444"},
+        )
+        data = json.loads(result[0].text)
+
+        assert data["success"] is False
+        assert "not found" in data["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_kernel_id_fails(self):
+        """Creating kernel with duplicate ID fails."""
+        await call_tool("python_kernel_create", {"kernel_id": "55555555"})
+
+        result = await call_tool(
+            "python_kernel_create", {"kernel_id": "55555555"}
+        )
+        data = json.loads(result[0].text)
+
+        assert data["success"] is False
+        assert "already exists" in data["error"].lower()

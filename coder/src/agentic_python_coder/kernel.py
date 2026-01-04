@@ -1,15 +1,22 @@
-"""IPykernel-based Python execution for persistent sessions."""
+"""IPykernel-based Python execution for persistent sessions.
+
+Supports multiple concurrent kernels with isolated state via a registry pattern.
+Each kernel has its own execution lock for thread-safe concurrent execution.
+"""
 
 import atexit
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 import time
+import uuid
 import warnings
+from dataclasses import dataclass, field
 from queue import Empty
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from jupyter_client import KernelManager
 
@@ -20,9 +27,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global kernel instance and lock
-_kernel = None
-_kernel_lock = threading.Lock()
+# Resource limits
+MAX_KERNELS = int(os.environ.get("CODER_MAX_KERNELS", "10"))
+DEFAULT_KERNEL_ID = "_default"
+
+
+@dataclass
+class KernelState:
+    """Per-kernel state tracking."""
+
+    kernel: Any  # PythonKernel (forward reference)
+    packages: List[str] = field(default_factory=list)
+    cwd: Optional[str] = None
+    created_at: float = field(default_factory=time.time)
+    last_used: float = field(default_factory=time.time)
+
+
+# Kernel registry and global lock
+_kernels: Dict[str, Optional[KernelState]] = {}
+_kernels_lock = threading.Lock()
 
 # Suppress Jupyter warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -86,8 +109,8 @@ class UVKernelManager(KernelManager):
 
         # Replace the full python path with just "python" for UV to manage
         # UV needs to control the Python environment
-        if cmd and cmd[0].endswith("python3"):
-            cmd = ["python"] + cmd[1:]
+        if cmd:
+            cmd[0] = "python"
 
         # Return wrapped command
         wrapped_cmd = uv_prefix + cmd
@@ -99,20 +122,30 @@ class UVKernelManager(KernelManager):
 
 
 class PythonKernel:
-    """Manages a single IPython kernel for persistent code execution."""
+    """Manages a single IPython kernel for persistent code execution.
+
+    Thread-safe: uses internal lock to prevent concurrent execution corruption.
+    """
 
     def __init__(
-        self, cwd: Optional[str] = None, with_packages: Optional[List[str]] = None
+        self,
+        cwd: Optional[str] = None,
+        with_packages: Optional[List[str]] = None,
+        inject_startup: bool = True,
     ):
         """Initialize and start the kernel.
 
         Args:
             cwd: Working directory for the kernel process
             with_packages: List of packages to include using UV's --with flag
+            inject_startup: Whether to inject MCP startup code (default True)
 
         Raises:
             RuntimeError: If kernel fails to start or UV is not available
         """
+        # Per-kernel execution lock for thread safety
+        self._exec_lock = threading.Lock()
+
         # Store configuration for comparison
         self.cwd = cwd
         self.with_packages = with_packages or []
@@ -146,25 +179,44 @@ class PythonKernel:
             )  # Increased timeout for UV package installation
             logger.info("Kernel started successfully")
 
-            # Configure IPython to always display the last value
-            # and suppress pkg_resources deprecation warning from CPMpy
-            startup_code = """
-import sys
-import warnings
-from IPython.core.interactiveshell import InteractiveShell
-InteractiveShell.ast_node_interactivity = 'last_expr'
-
-# Suppress pkg_resources deprecation warning from CPMpy
-warnings.filterwarnings('ignore', message='pkg_resources is deprecated', category=UserWarning)
-warnings.filterwarnings('ignore', message='.*pkg_resources.*', category=DeprecationWarning)
-"""
-            self.execute(startup_code)
+            # Configure IPython and inject startup code
+            if inject_startup:
+                self._inject_startup_code()
 
         except Exception as e:
             logger.error(f"Failed to start kernel: {e}")
             # Clean up any partially started resources
             self._cleanup_on_error()
             raise RuntimeError(f"Failed to start kernel: {e}") from e
+
+    def _inject_startup_code(self):
+        """Inject safety and configuration code: block input(), set matplotlib, etc."""
+        startup_code = """
+import sys
+import warnings
+import builtins
+from IPython.core.interactiveshell import InteractiveShell
+
+# Configure IPython to display last expression value
+InteractiveShell.ast_node_interactivity = 'last_expr'
+
+# Suppress pkg_resources deprecation warning from CPMpy
+warnings.filterwarnings('ignore', message='pkg_resources is deprecated', category=UserWarning)
+warnings.filterwarnings('ignore', message='.*pkg_resources.*', category=DeprecationWarning)
+
+# Block interactive input() - not supported in MCP/automated sessions
+def _blocked_input(*args, **kwargs):
+    raise RuntimeError("Interactive input() not supported")
+builtins.input = _blocked_input
+
+# Set matplotlib to non-interactive backend if available
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+except ImportError:
+    pass
+"""
+        self._execute_raw(startup_code)
 
     def _cleanup_on_error(self):
         """Clean up resources if initialization fails."""
@@ -177,8 +229,8 @@ warnings.filterwarnings('ignore', message='.*pkg_resources.*', category=Deprecat
         except Exception:
             pass  # Best effort cleanup
 
-    def execute(self, code: str, deadline_timeout: int = 60) -> Dict[str, str]:
-        """Execute code and wait for completion.
+    def _execute_raw(self, code: str, deadline_timeout: int = 60) -> Dict[str, str]:
+        """Execute code without locking (internal use only).
 
         Args:
             code: Python code to execute
@@ -228,6 +280,19 @@ warnings.filterwarnings('ignore', message='.*pkg_resources.*', category=Deprecat
 
         return output
 
+    def execute(self, code: str, deadline_timeout: int = 60) -> Dict[str, str]:
+        """Execute code with thread-safe locking.
+
+        Args:
+            code: Python code to execute
+            deadline_timeout: Hard deadline in seconds for entire execution
+
+        Returns:
+            Dict with stdout, stderr, result, and error fields
+        """
+        with self._exec_lock:
+            return self._execute_raw(code, deadline_timeout)
+
     def shutdown(self):
         """Shutdown the kernel and clean up."""
         try:
@@ -249,75 +314,301 @@ warnings.filterwarnings('ignore', message='.*pkg_resources.*', category=Deprecat
             pass
 
 
+# =============================================================================
+# Core Registry Functions
+# =============================================================================
+
+
+def create_kernel(
+    kernel_id: Optional[str] = None,
+    with_packages: Optional[List[str]] = None,
+    cwd: Optional[str] = None,
+) -> str:
+    """Create a new kernel and return its ID.
+
+    Args:
+        kernel_id: Optional explicit ID (8 hex chars). Auto-generated if None.
+        with_packages: Packages to install via UV.
+        cwd: Working directory for kernel.
+
+    Returns:
+        The kernel ID.
+
+    Raises:
+        ValueError: If kernel_id already exists or invalid format.
+        RuntimeError: If kernel fails to start or MAX_KERNELS exceeded.
+    """
+    with _kernels_lock:
+        # Check resource limit
+        if len(_kernels) >= MAX_KERNELS:
+            raise RuntimeError(f"Maximum {MAX_KERNELS} kernels exceeded")
+
+        # Generate or validate ID
+        if kernel_id is None:
+            kernel_id = uuid.uuid4().hex[:8]
+            while kernel_id in _kernels:  # Handle unlikely collision
+                kernel_id = uuid.uuid4().hex[:8]
+        else:
+            # Allow DEFAULT_KERNEL_ID or 8-char hex
+            if kernel_id != DEFAULT_KERNEL_ID:
+                if not re.match(r"^[0-9a-f]{8}$", kernel_id):
+                    raise ValueError(f"Invalid kernel_id format: {kernel_id}")
+            if kernel_id in _kernels:
+                raise ValueError(f"Kernel {kernel_id} already exists")
+
+        # Reserve slot (None = being created)
+        _kernels[kernel_id] = None
+
+    # Create kernel outside lock (can be slow)
+    try:
+        kernel = PythonKernel(cwd=cwd, with_packages=with_packages)
+        state = KernelState(
+            kernel=kernel,
+            packages=with_packages or [],
+            cwd=cwd,
+        )
+        with _kernels_lock:
+            _kernels[kernel_id] = state
+        logger.info(f"Created kernel {kernel_id}")
+        return kernel_id
+    except Exception:
+        with _kernels_lock:
+            _kernels.pop(kernel_id, None)  # Release reservation
+        raise
+
+
+def execute_in_kernel(
+    kernel_id: str,
+    code: str,
+    timeout: int = 60,
+) -> Dict[str, Any]:
+    """Execute code in specified kernel.
+
+    Args:
+        kernel_id: Target kernel ID.
+        code: Python code to execute.
+        timeout: Execution timeout in seconds.
+
+    Returns:
+        Dict with stdout, stderr, result, error, kernel_id fields.
+
+    Raises:
+        KeyError: If kernel not found.
+        RuntimeError: If kernel crashed during execution.
+    """
+    with _kernels_lock:
+        if kernel_id not in _kernels:
+            raise KeyError(f"Unknown kernel: {kernel_id}")
+        state = _kernels[kernel_id]
+        if state is None:
+            raise KeyError(f"Kernel {kernel_id} is being created")
+
+    # Check if alive before execution
+    if not state.kernel.km.is_alive():
+        with _kernels_lock:
+            _kernels.pop(kernel_id, None)
+        raise RuntimeError(f"Kernel {kernel_id} is dead")
+
+    # Execute (uses per-kernel lock internally)
+    result = state.kernel.execute(code, deadline_timeout=timeout)
+
+    # Update last_used
+    state.last_used = time.time()
+
+    # Check if crashed during execution
+    if not state.kernel.km.is_alive():
+        with _kernels_lock:
+            _kernels.pop(kernel_id, None)
+        result["error"] = f"Kernel {kernel_id} crashed during execution"
+
+    # Always include kernel_id in result
+    result["kernel_id"] = kernel_id
+    return result
+
+
+def shutdown_kernel_by_id(kernel_id: str) -> bool:
+    """Shutdown specific kernel.
+
+    Returns:
+        True if kernel existed and was shut down, False if not found.
+    """
+    with _kernels_lock:
+        state = _kernels.pop(kernel_id, None)
+
+    if state is None:
+        return False
+
+    # Acquire exec lock to ensure no execution in progress
+    with state.kernel._exec_lock:
+        state.kernel.shutdown()
+    logger.info(f"Shut down kernel {kernel_id}")
+    return True
+
+
+def interrupt_kernel_by_id(kernel_id: str) -> bool:
+    """Send interrupt signal to specific kernel.
+
+    Returns:
+        True if interrupt sent, False if kernel not found.
+
+    Raises:
+        RuntimeError: If kernel died from interrupt.
+    """
+    with _kernels_lock:
+        if kernel_id not in _kernels:
+            return False
+        state = _kernels[kernel_id]
+
+    if state is None or not state.kernel.km.is_alive():
+        return False
+
+    state.kernel.km.interrupt_kernel()
+    time.sleep(0.5)  # Grace period
+
+    if not state.kernel.km.is_alive():
+        with _kernels_lock:
+            _kernels.pop(kernel_id, None)
+        raise RuntimeError(f"Kernel {kernel_id} died from interrupt")
+
+    return True
+
+
+def restart_kernel(
+    kernel_id: str,
+    with_packages: Optional[List[str]] = None,
+) -> None:
+    """Restart kernel with new config, preserving the ID.
+
+    Args:
+        kernel_id: Kernel to restart.
+        with_packages: New packages (None = keep existing).
+
+    Raises:
+        KeyError: If kernel not found.
+        RuntimeError: If new kernel fails to start.
+    """
+    with _kernels_lock:
+        if kernel_id not in _kernels:
+            raise KeyError(f"Unknown kernel: {kernel_id}")
+        state = _kernels[kernel_id]
+        if state is None:
+            raise KeyError(f"Kernel {kernel_id} is being created")
+        old_packages = state.packages
+        old_cwd = state.cwd
+        # Mark as restarting
+        _kernels[kernel_id] = None
+
+    # Shutdown old kernel
+    with state.kernel._exec_lock:
+        state.kernel.shutdown()
+
+    # Create new kernel with same ID
+    packages = with_packages if with_packages is not None else old_packages
+    try:
+        kernel = PythonKernel(cwd=old_cwd, with_packages=packages)
+        with _kernels_lock:
+            _kernels[kernel_id] = KernelState(
+                kernel=kernel,
+                packages=packages,
+                cwd=old_cwd,
+            )
+        logger.info(f"Restarted kernel {kernel_id}")
+    except Exception:
+        # Remove from registry on failure
+        with _kernels_lock:
+            _kernels.pop(kernel_id, None)
+        raise
+
+
+# =============================================================================
+# Query Functions
+# =============================================================================
+
+
+def list_kernels() -> List[Dict[str, Any]]:
+    """List all active kernels.
+
+    Returns:
+        List of {id, packages, cwd, alive, created_at, last_used} dicts.
+    """
+    with _kernels_lock:
+        result = []
+        for kid, state in _kernels.items():
+            if state is not None:
+                result.append(
+                    {
+                        "id": kid,
+                        "packages": state.packages,
+                        "cwd": state.cwd,
+                        "alive": state.kernel.km.is_alive(),
+                        "created_at": state.created_at,
+                        "last_used": state.last_used,
+                    }
+                )
+        return result
+
+
+def kernel_exists(kernel_id: str) -> bool:
+    """Check if kernel exists (without raising)."""
+    with _kernels_lock:
+        return kernel_id in _kernels and _kernels[kernel_id] is not None
+
+
+def get_kernel_info(kernel_id: str) -> Dict[str, Any]:
+    """Get info for a specific kernel.
+
+    Raises:
+        KeyError: If kernel not found.
+    """
+    with _kernels_lock:
+        if kernel_id not in _kernels or _kernels[kernel_id] is None:
+            raise KeyError(f"Unknown kernel: {kernel_id}")
+        state = _kernels[kernel_id]
+        return {
+            "id": kernel_id,
+            "packages": state.packages,
+            "cwd": state.cwd,
+            "alive": state.kernel.km.is_alive(),
+            "created_at": state.created_at,
+            "last_used": state.last_used,
+        }
+
+
+def shutdown_all_kernels():
+    """Shutdown all kernels. Called by atexit."""
+    with _kernels_lock:
+        kernel_ids = list(_kernels.keys())
+
+    for kid in kernel_ids:
+        try:
+            shutdown_kernel_by_id(kid)
+        except Exception:
+            pass  # Best effort
+
+
+# =============================================================================
+# Backward Compatibility API
+# =============================================================================
+
+
 def get_kernel(
     cwd: Optional[str] = None, with_packages: Optional[List[str]] = None
 ) -> PythonKernel:
-    """Get or create the global kernel instance.
+    """Legacy API: get or create the default kernel.
 
-    If a kernel is already running, it will be shut down and replaced if the
-    requested `cwd` or `with_packages` are different.
-
-    Args:
-        cwd: Working directory for the kernel
-        with_packages: List of packages to include using UV's --with flag
-
-    Returns:
-        The global kernel instance
-
-    Raises:
-        RuntimeError: If kernel fails to start
+    Note: Does NOT auto-restart on config change. Call shutdown_kernel()
+    first if you need different packages/cwd.
     """
-    global _kernel
+    if not kernel_exists(DEFAULT_KERNEL_ID):
+        create_kernel(DEFAULT_KERNEL_ID, with_packages, cwd)
 
-    requested_packages = with_packages or []
-
-    with _kernel_lock:
-        # Check if kernel is dead or if configuration has changed
-        kernel_is_stale = False
-
-        if _kernel is None:
-            logger.debug("No existing kernel found")
-            kernel_is_stale = True
-        elif not _kernel.km.is_alive():
-            logger.warning("Existing kernel is dead, will restart")
-            kernel_is_stale = True
-        elif _kernel.cwd != cwd:
-            logger.info(
-                f"Working directory changed from {_kernel.cwd} to {cwd}, restarting kernel"
-            )
-            kernel_is_stale = True
-        elif set(_kernel.with_packages) != set(requested_packages):
-            logger.info(
-                f"Package list changed from {_kernel.with_packages} to {requested_packages}, restarting kernel"
-            )
-            kernel_is_stale = True
-
-        if kernel_is_stale:
-            if _kernel:
-                logger.info("Shutting down existing kernel")
-                _kernel.shutdown()  # Clean up old kernel
-
-            logger.info(
-                f"Creating new kernel with cwd={cwd}, packages={requested_packages}"
-            )
-            try:
-                _kernel = PythonKernel(cwd, with_packages)
-            except Exception as e:
-                logger.error(f"Failed to create kernel: {e}")
-                _kernel = None
-                raise
-
-        return _kernel
+    with _kernels_lock:
+        return _kernels[DEFAULT_KERNEL_ID].kernel
 
 
 def shutdown_kernel():
-    """Shutdown the global kernel if it exists."""
-    global _kernel
-
-    with _kernel_lock:
-        if _kernel is not None:
-            _kernel.shutdown()
-            _kernel = None
+    """Legacy API: shutdown the default kernel."""
+    shutdown_kernel_by_id(DEFAULT_KERNEL_ID)
 
 
 def format_output(output: Dict[str, str]) -> str:
@@ -340,4 +631,4 @@ def format_output(output: Dict[str, str]) -> str:
 
 
 # Register cleanup on exit
-atexit.register(shutdown_kernel)
+atexit.register(shutdown_all_kernels)
