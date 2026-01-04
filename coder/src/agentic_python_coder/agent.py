@@ -2,7 +2,7 @@
 
 from typing import Dict, Any, List, Optional
 from pathlib import Path
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 from langgraph.checkpoint.memory import InMemorySaver
 
 from agentic_python_coder.llm import get_openrouter_llm
@@ -108,8 +108,8 @@ def create_coding_agent(
 
     # Create the agent with memory
     checkpointer = InMemorySaver()
-    agent = create_react_agent(
-        llm, tools, prompt=combined_prompt, checkpointer=checkpointer
+    agent = create_agent(
+        llm, tools, system_prompt=combined_prompt, checkpointer=checkpointer
     )
 
     # Store metadata for run_agent to use
