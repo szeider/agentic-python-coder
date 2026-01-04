@@ -251,42 +251,35 @@ Add to your MCP settings (e.g., `~/.claude/claude_desktop_config.json` or projec
 
 ### Available Tools
 
-#### Core Tools
-
 | Tool | Description |
 |------|-------------|
 | `python_exec` | Execute Python code. Auto-starts session if needed. Default 30s timeout. |
-| `python_reset` | Clear session state. Optionally install packages (e.g., `packages=["numpy", "pandas"]`). |
+| `python_reset` | Create new kernel (no `kernel_id`) OR reset existing kernel (with `kernel_id`). Optionally install packages. |
 | `python_status` | Check if session is active, Python version, installed packages, defined variables. |
 | `python_interrupt` | Send interrupt signal to stop long-running code. Session state is preserved. |
 
-#### Multi-Kernel Tools
+### Multi-Agent Workflow
 
-For parallel execution or isolated experiments, create multiple kernels:
+For parallel agents, each agent gets its own kernel:
 
-| Tool | Description |
-|------|-------------|
-| `python_kernel_create` | Create a new isolated kernel. Returns `kernel_id` to use with other tools. |
-| `python_kernel_list` | List all active kernels with IDs, packages, and status. |
-| `python_kernel_shutdown` | Shutdown a specific kernel by ID. Frees resources. |
-
-All core tools accept an optional `kernel_id` parameter to target a specific kernel.
-
-**Example workflow:**
 ```
-1. python_kernel_create(packages=["numpy"]) → {"kernel_id": "a1b2c3d4"}
-2. python_exec(kernel_id="a1b2c3d4", code="import numpy as np; np.random.rand(3)")
-3. python_kernel_shutdown(kernel_id="a1b2c3d4")
+Agent A                              Agent B
+────────                             ────────
+python_reset() → kernel_id="aaa"     python_reset() → kernel_id="bbb"
+python_exec(kernel_id="aaa", ...)    python_exec(kernel_id="bbb", ...)
+python_exec(kernel_id="aaa", ...)    python_exec(kernel_id="bbb", ...)
 ```
+
+Simple single-agent use: just call `python_exec()` — the default kernel auto-starts.
 
 ### Features
 
 - **Persistent state**: Variables, imports, and definitions persist across executions
-- **Auto-start**: Session starts automatically on first `python_exec`
+- **Auto-start**: Default session starts automatically on first `python_exec`
 - **Package installation**: Use `python_reset` with `packages` parameter to install dependencies
 - **Timeout handling**: Long-running code times out gracefully (session preserved)
 - **Interrupt support**: Stop runaway code without losing session state
-- **Multi-kernel**: Run parallel experiments in isolated kernels
+- **Multi-kernel**: Each `python_reset()` creates an isolated kernel for parallel agents
 
 ### Usage Tips
 

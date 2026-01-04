@@ -18,9 +18,7 @@ from agentic_python_coder.kernel import (
     execute_in_kernel,
     interrupt_kernel_by_id,
     kernel_exists,
-    list_kernels,
     restart_kernel,
-    shutdown_kernel_by_id,
 )
 
 # Configure logging
@@ -78,11 +76,11 @@ async def execute_with_timeout(
                         "error": f"Failed to auto-start session: {str(e)}",
                     }
     elif not kernel_exists(kernel_id):
-        # Non-default kernels should already exist (created via python_kernel_create)
+        # Non-default kernels should already exist (created via python_reset)
         return {
             "success": False,
             "kernel_id": kernel_id,
-            "error": f"Kernel {kernel_id} not found. Create it first with python_kernel_create.",
+            "error": f"Kernel {kernel_id} not found. Create it first with python_reset().",
         }
 
     try:
@@ -154,7 +152,6 @@ async def list_tools():
 Use for: calculations, data analysis, testing code, running algorithms.
 State persists: variables, imports, functions remembered across calls.
 Auto-starts: no setup needed, just call with code.
-Use kernel_id to target a specific kernel (from python_kernel_create).
 
 Output fields:
 - result: final expression value (like REPL output)
@@ -181,7 +178,7 @@ Tips:
                     },
                     "kernel_id": {
                         "type": "string",
-                        "description": "Target kernel ID. Omit for default kernel.",
+                        "description": "Target kernel ID (from python_reset). Omit for default kernel.",
                     },
                 },
                 "required": ["code"],
@@ -189,30 +186,31 @@ Tips:
         ),
         Tool(
             name="python_reset",
-            description="""Reset session: kill current session and start fresh with optional packages.
+            description="""Create a new kernel OR reset an existing one.
 
-WARNING: This clears ALL state - variables, imports, functions are lost.
-If a computation is running, it will be killed.
-Use kernel_id to reset a specific kernel, omit for default.
+Two modes:
+- WITHOUT kernel_id: Creates NEW isolated kernel, returns kernel_id
+- WITH kernel_id: Resets that kernel (clears state, optionally installs packages)
 
-Only needed when:
-- You need packages not in stdlib (numpy, pandas, requests, etc.)
-- You want to clear all variables and start fresh
-- Session crashed and needs restart
+For parallel agents: each agent calls python_reset() once to get its own kernel_id,
+then uses that ID for all python_exec calls.
 
-Not needed for basic Python - python_exec auto-starts a session.""",
+Example workflow:
+1. python_reset(packages=["numpy"]) -> {"kernel_id": "a1b2c3d4"}
+2. python_exec(kernel_id="a1b2c3d4", code="import numpy as np")
+3. python_exec(kernel_id="a1b2c3d4", code="np.random.rand(3)")""",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "packages": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "PyPI packages to install (e.g., ['numpy', 'pandas']). Uses UV for fast installation. First import may need timeout=60.",
+                        "description": "PyPI packages to install (e.g., ['numpy', 'pandas']). Uses UV for fast installation.",
                         "default": [],
                     },
                     "kernel_id": {
                         "type": "string",
-                        "description": "Kernel to reset. Omit for default kernel.",
+                        "description": "If provided: reset this kernel. If omitted: create NEW kernel.",
                     },
                 },
             },
@@ -227,7 +225,6 @@ Use to:
 - Verify installed packages
 - Get Python version info
 
-Use kernel_id to check a specific kernel, omit for default.
 No side effects - safe to call anytime.""",
             inputSchema={
                 "type": "object",
@@ -245,7 +242,6 @@ No side effects - safe to call anytime.""",
 
 Sends interrupt signal (like Ctrl+C) to stop long-running code.
 Session state is preserved - variables defined before the interrupt remain.
-Use kernel_id to target specific kernel, omit for default.
 
 Use when:
 - Code is taking too long
@@ -263,60 +259,6 @@ Note: Call this, then call python_exec to continue working.""",
                 },
             },
         ),
-        # New multi-kernel tools
-        Tool(
-            name="python_kernel_create",
-            description="""Create a new isolated Python kernel.
-
-Returns kernel_id - SAVE THIS and pass to other tools.
-Use for parallel experiments or isolated execution contexts.
-
-Example workflow:
-1. python_kernel_create(packages=["numpy"]) -> {"kernel_id": "a1b2c3d4"}
-2. python_exec(kernel_id="a1b2c3d4", code="import numpy as np")
-3. python_kernel_shutdown(kernel_id="a1b2c3d4")""",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "packages": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "PyPI packages to install.",
-                        "default": [],
-                    },
-                    "kernel_id": {
-                        "type": "string",
-                        "description": "Optional explicit ID (8 hex chars). Auto-generated if omitted.",
-                    },
-                },
-            },
-        ),
-        Tool(
-            name="python_kernel_list",
-            description="""List all active kernels with IDs, packages, and status.
-
-Use to see what kernels exist and their state.""",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
-        ),
-        Tool(
-            name="python_kernel_shutdown",
-            description="""Shutdown a specific kernel by ID.
-
-Frees resources. Cannot shutdown the default kernel this way (use python_reset).""",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "kernel_id": {
-                        "type": "string",
-                        "description": "Kernel ID to shutdown.",
-                    },
-                },
-                "required": ["kernel_id"],
-            },
-        ),
     ]
 
 
@@ -326,21 +268,34 @@ async def call_tool(name: str, arguments: dict):
     loop = asyncio.get_running_loop()
 
     if name == "python_reset":
-        kernel_id = get_kernel_id(arguments)
+        kernel_id = arguments.get("kernel_id")  # None means create new kernel
         packages = arguments.get("packages", [])
 
         try:
-            # Use restart_kernel if exists, otherwise create new
-            if kernel_exists(kernel_id):
-                # Pass packages directly - empty list means reset to no packages
+            if kernel_id is None:
+                # No kernel_id provided: CREATE NEW kernel
+                kernel_id = await loop.run_in_executor(
+                    None,
+                    lambda: create_kernel(None, packages if packages else None),
+                )
+            elif kernel_exists(kernel_id):
+                # kernel_id provided and exists: RESET it
                 await loop.run_in_executor(
                     None, lambda: restart_kernel(kernel_id, packages)
                 )
             else:
-                await loop.run_in_executor(
-                    None,
-                    lambda: create_kernel(kernel_id, packages if packages else None),
-                )
+                # kernel_id provided but doesn't exist: error
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "success": False,
+                                "error": f"Kernel {kernel_id} not found. Omit kernel_id to create a new kernel.",
+                            }
+                        ),
+                    )
+                ]
 
             if packages:
                 # Try to get package versions
@@ -529,111 +484,6 @@ import importlib.metadata
                             "success": False,
                             "kernel_id": kernel_id,
                             "error": f"Failed to interrupt: {str(e)}",
-                        }
-                    ),
-                )
-            ]
-
-    elif name == "python_kernel_create":
-        packages = arguments.get("packages", [])
-        explicit_id = arguments.get("kernel_id")
-
-        try:
-            kernel_id = await loop.run_in_executor(
-                None,
-                lambda: create_kernel(explicit_id, packages if packages else None),
-            )
-            kernels = await loop.run_in_executor(None, list_kernels)
-
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {
-                            "success": True,
-                            "kernel_id": kernel_id,
-                            "packages": packages,
-                            "active_kernels": len(kernels),
-                        }
-                    ),
-                )
-            ]
-        except ValueError as e:
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps({"success": False, "error": str(e)}),
-                )
-            ]
-        except RuntimeError as e:
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps({"success": False, "error": str(e)}),
-                )
-            ]
-
-    elif name == "python_kernel_list":
-        kernels = await loop.run_in_executor(None, list_kernels)
-        return [
-            TextContent(
-                type="text",
-                text=json.dumps({"success": True, "kernels": kernels}),
-            )
-        ]
-
-    elif name == "python_kernel_shutdown":
-        kernel_id = arguments.get("kernel_id")
-
-        if not kernel_id:
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {"success": False, "error": "kernel_id is required"}
-                    ),
-                )
-            ]
-
-        if kernel_id == DEFAULT_KERNEL_ID:
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {
-                            "success": False,
-                            "error": "Cannot shutdown default kernel. Use python_reset instead.",
-                        }
-                    ),
-                )
-            ]
-
-        success = await loop.run_in_executor(
-            None, lambda: shutdown_kernel_by_id(kernel_id)
-        )
-
-        if success:
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {
-                            "success": True,
-                            "kernel_id": kernel_id,
-                            "message": f"Kernel {kernel_id} shut down",
-                        }
-                    ),
-                )
-            ]
-        else:
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {
-                            "success": False,
-                            "kernel_id": kernel_id,
-                            "error": f"Kernel {kernel_id} not found",
                         }
                     ),
                 )
