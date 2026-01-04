@@ -66,9 +66,9 @@ def test_create_agent_metadata():
             task_basename="test_task",
         )
         metadata = agent._coder_metadata
+        # Only working_directory is stored in metadata (used by run_agent)
+        # with_packages and task_basename are used during agent creation only
         assert metadata["working_directory"] == tmpdir
-        assert metadata["with_packages"] == ["numpy", "pandas"]
-        assert metadata["task_basename"] == "test_task"
 
 
 def test_get_final_response():
