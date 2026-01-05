@@ -23,7 +23,11 @@ from agentic_python_coder.project_md import (
     check_packages_available,
     create_project_prompt,
 )
-from agentic_python_coder.llm import DEFAULT_MODEL, list_available_models, load_model_config
+from agentic_python_coder.llm import (
+    DEFAULT_MODEL,
+    list_available_models,
+    load_model_config,
+)
 from agentic_python_coder import __version__
 
 
@@ -88,7 +92,8 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--version", "-V",
+        "--version",
+        "-V",
         action="version",
         version=f"%(prog)s {__version__}",
     )
@@ -106,7 +111,9 @@ def parse_args():
         help="Path to task file (creates {basename}_code.py and {basename}.jsonl)",
     )
 
-    parser.add_argument("--model", help=f"Model name or JSON file (default: {DEFAULT_MODEL})")
+    parser.add_argument(
+        "--model", help=f"Model name or JSON file (default: {DEFAULT_MODEL})"
+    )
 
     parser.add_argument(
         "--interactive", "-i", action="store_true", help="Interactive mode"
@@ -145,7 +152,8 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--quiet", "-q",
+        "--quiet",
+        "-q",
         action="store_true",
         help="Suppress console output during execution",
     )
@@ -176,13 +184,13 @@ def copy_resource_dir(source_path, dest_path: Path):
         dest_item = dest_path / item.name
         if item.is_file():
             # Skip __pycache__ and .pyc files
-            if item.name.endswith('.pyc') or item.name == '__pycache__':
+            if item.name.endswith(".pyc") or item.name == "__pycache__":
                 continue
             # Read and write file content
             content = item.read_bytes()
             dest_item.write_bytes(content)
         elif item.is_dir():
-            if item.name == '__pycache__':
+            if item.name == "__pycache__":
                 continue
             copy_resource_dir(item, dest_item)
 
@@ -216,7 +224,9 @@ def init_examples(template: str = "all"):
 
     print(f"\nExamples initialized in: {output_dir.absolute()}")
     print("\nUsage:")
-    print(f"  coder --with cpmpy --project {output_dir}/cpmpy/cpmpy.md --task {output_dir}/cpmpy/sample_tasks/n_queens.md")
+    print(
+        f"  coder --with cpmpy --project {output_dir}/cpmpy/cpmpy.md --task {output_dir}/cpmpy/sample_tasks/n_queens.md"
+    )
 
 
 def validate_packages(packages):

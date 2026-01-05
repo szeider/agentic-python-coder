@@ -4,32 +4,25 @@ import pytest
 import json
 import asyncio
 
-from agentic_python_coder import mcp_server
 from agentic_python_coder.mcp_server import (
     call_tool,
     list_tools,
     truncate_output,
     MAX_OUTPUT,
 )
-from agentic_python_coder.kernel import shutdown_kernel
+from agentic_python_coder.kernel import shutdown_all_kernels
 
 
 @pytest.fixture(autouse=True)
 def reset_mcp_state():
-    """Reset MCP server state before and after each test."""
+    """Reset kernel state before and after each test."""
     # Reset before test
-    mcp_server._kernel = None
-    mcp_server._initialized = False
-    mcp_server._packages = []
-    shutdown_kernel()
+    shutdown_all_kernels()
 
     yield
 
     # Reset after test
-    mcp_server._kernel = None
-    mcp_server._initialized = False
-    mcp_server._packages = []
-    shutdown_kernel()
+    shutdown_all_kernels()
 
 
 class TestListTools:
@@ -44,6 +37,7 @@ class TestListTools:
         assert "python_reset" in names
         assert "python_status" in names
         assert "python_interrupt" in names
+        assert len(names) == 4
 
     @pytest.mark.asyncio
     async def test_python_exec_schema(self):
@@ -76,25 +70,43 @@ class TestAutoStart:
 
 
 class TestPythonReset:
-    """Tests for python_reset tool (optional, for packages/reset)."""
+    """Tests for python_reset tool."""
 
     @pytest.mark.asyncio
-    async def test_reset_no_packages(self):
-        """Reset session without packages."""
+    async def test_reset_creates_new_kernel(self):
+        """python_reset without kernel_id creates a new kernel."""
         result = await call_tool("python_reset", {})
         data = json.loads(result[0].text)
         assert data["success"] is True
-        assert "no packages" in data["message"].lower()
+        assert "kernel_id" in data
+        assert len(data["kernel_id"]) == 8  # 8-char hex
 
     @pytest.mark.asyncio
-    async def test_reset_clears_session(self):
-        """Calling reset clears existing session."""
-        await call_tool("python_exec", {"code": "x = 42"})  # auto-starts
-        await call_tool("python_reset", {})  # Reset
-        result = await call_tool("python_exec", {"code": "x"})
+    async def test_reset_with_id_clears_session(self):
+        """python_reset with kernel_id resets that kernel."""
+        # Create a kernel
+        create_result = await call_tool("python_reset", {})
+        kernel_id = json.loads(create_result[0].text)["kernel_id"]
+
+        # Set a variable
+        await call_tool("python_exec", {"code": "x = 42", "kernel_id": kernel_id})
+
+        # Reset that kernel
+        await call_tool("python_reset", {"kernel_id": kernel_id})
+
+        # Variable should be gone
+        result = await call_tool("python_exec", {"code": "x", "kernel_id": kernel_id})
         data = json.loads(result[0].text)
         assert data["success"] is False
         assert "NameError" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_reset_nonexistent_kernel_fails(self):
+        """python_reset with non-existent kernel_id fails."""
+        result = await call_tool("python_reset", {"kernel_id": "nonexist"})
+        data = json.loads(result[0].text)
+        assert data["success"] is False
+        assert "not found" in data["error"].lower()
 
 
 class TestPythonStatus:
@@ -325,3 +337,80 @@ class TestConcurrency:
         # Both should succeed with correct results (not interleaved)
         assert data1["result"] == "1"
         assert data2["result"] == "2"
+
+
+class TestMultiKernel:
+    """Tests for multi-kernel functionality via python_reset."""
+
+    @pytest.mark.asyncio
+    async def test_reset_creates_kernel_with_id(self):
+        """python_reset without kernel_id creates new kernel with ID."""
+        result = await call_tool("python_reset", {})
+        data = json.loads(result[0].text)
+
+        assert data["success"] is True
+        assert "kernel_id" in data
+        assert len(data["kernel_id"]) == 8  # 8-char hex
+
+    @pytest.mark.asyncio
+    async def test_exec_with_kernel_id(self):
+        """python_exec can target specific kernel."""
+        # Create a kernel via python_reset
+        create_result = await call_tool("python_reset", {})
+        kernel_id = json.loads(create_result[0].text)["kernel_id"]
+
+        # Execute in that kernel
+        result = await call_tool(
+            "python_exec",
+            {"code": "x = 42; x", "kernel_id": kernel_id},
+        )
+        data = json.loads(result[0].text)
+
+        assert data["success"] is True
+        assert data["result"] == "42"
+        assert data["kernel_id"] == kernel_id
+
+    @pytest.mark.asyncio
+    async def test_kernels_have_isolated_state(self):
+        """Different kernels have isolated state."""
+        # Create two kernels via python_reset
+        r1 = await call_tool("python_reset", {})
+        r2 = await call_tool("python_reset", {})
+        kernel1 = json.loads(r1[0].text)["kernel_id"]
+        kernel2 = json.loads(r2[0].text)["kernel_id"]
+
+        # Set different values in each
+        await call_tool(
+            "python_exec",
+            {"code": "value = 'kernel1'", "kernel_id": kernel1},
+        )
+        await call_tool(
+            "python_exec",
+            {"code": "value = 'kernel2'", "kernel_id": kernel2},
+        )
+
+        # Check each kernel has its own value
+        result1 = await call_tool(
+            "python_exec", {"code": "value", "kernel_id": kernel1}
+        )
+        result2 = await call_tool(
+            "python_exec", {"code": "value", "kernel_id": kernel2}
+        )
+
+        data1 = json.loads(result1[0].text)
+        data2 = json.loads(result2[0].text)
+
+        assert data1["result"] == "'kernel1'"
+        assert data2["result"] == "'kernel2'"
+
+    @pytest.mark.asyncio
+    async def test_exec_in_nonexistent_kernel_fails(self):
+        """python_exec fails for non-existent kernel."""
+        result = await call_tool(
+            "python_exec",
+            {"code": "1+1", "kernel_id": "44444444"},
+        )
+        data = json.loads(result[0].text)
+
+        assert data["success"] is False
+        assert "not found" in data["error"].lower()

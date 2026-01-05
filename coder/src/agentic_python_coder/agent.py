@@ -1,8 +1,11 @@
 """ReAct agent for Python coding tasks."""
 
+import json
+import os
+import time
 from typing import Dict, Any, List, Optional
 from pathlib import Path
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 from langgraph.checkpoint.memory import InMemorySaver
 
 from agentic_python_coder.llm import get_openrouter_llm
@@ -45,7 +48,7 @@ def create_coding_agent(
         working_directory: Directory for file operations
         system_prompt: System prompt as string (takes precedence over path)
         system_prompt_path: Path to system prompt file (used if system_prompt not provided)
-        model: Optional model name (defaults to claude-sonnet-4.5)
+        model: Optional model name (uses configured default if not specified)
         project_prompt: Optional project-specific prompt
         with_packages: Optional list of packages for dynamic mode
         task_content: Task description/content
@@ -66,8 +69,6 @@ def create_coding_agent(
 
     # Store packages for kernel initialization
     if with_packages is not None:
-        import os
-
         os.environ["CODER_WITH_PACKAGES"] = ",".join(with_packages)
 
     # Get LLM instance
@@ -108,15 +109,13 @@ def create_coding_agent(
 
     # Create the agent with memory
     checkpointer = InMemorySaver()
-    agent = create_react_agent(
-        llm, tools, prompt=combined_prompt, checkpointer=checkpointer
+    agent = create_agent(
+        llm, tools, system_prompt=combined_prompt, checkpointer=checkpointer
     )
 
     # Store metadata for run_agent to use
     agent._coder_metadata = {
         "working_directory": working_directory,
-        "with_packages": with_packages,
-        "task_basename": task_basename,
     }
 
     return agent
@@ -126,24 +125,21 @@ def _print_tool_progress(tool_name: str, args: dict):
     """Print progress info for a tool call."""
     if tool_name == "python_exec" and "code" in args:
         code = args["code"]
+        code_stripped = code.strip()
         if "def " in code:
-            func_match = code.split("def ")[1].split("(")[0] if "def " in code else ""
+            func_match = code.split("def ")[1].split("(")[0]
             print(f"  {tool_name}: defining function {func_match}()")
         elif "class " in code:
-            class_match = (
-                code.split("class ")[1].split("(")[0].split(":")[0]
-                if "class " in code
-                else ""
-            )
+            class_match = code.split("class ")[1].split("(")[0].split(":")[0]
             print(f"  {tool_name}: defining class {class_match}")
-        elif "import " in code and len(code.strip().split("\n")) == 1:
-            print(f"  {tool_name}: {code.strip()}")
-        elif "=" in code and len(code.strip().split("\n")) == 1:
+        elif "import " in code and len(code_stripped.split("\n")) == 1:
+            print(f"  {tool_name}: {code_stripped}")
+        elif "=" in code and len(code_stripped.split("\n")) == 1:
             var_name = code.split("=")[0].strip()
             print(f"  {tool_name}: assigning variable {var_name}")
-        elif code.strip().startswith("print("):
+        elif code_stripped.startswith("print("):
             print(
-                f"  {tool_name}: {code.strip()[:50]}{'...' if len(code.strip()) > 50 else ''}"
+                f"  {tool_name}: {code_stripped[:50]}{'...' if len(code_stripped) > 50 else ''}"
             )
         elif "read_csv" in code or "read_excel" in code or "read_json" in code:
             print(f"  {tool_name}: loading data file")
@@ -170,32 +166,23 @@ def _print_tool_progress(tool_name: str, args: dict):
         print(f"\n  {tool_name}:")
         todos = args["todos"]
         for todo in todos:
-            status_symbol = (
-                "☒"
-                if todo["status"] == "completed"
-                else "☐"
-                if todo["status"] == "pending"
-                else "▶"
-            )
-            print(f"     {status_symbol} {todo['content']}")
+            status = todo.get("status", "")
+            content = todo.get("content", "")
+            status_symbol = "☒" if status == "completed" else "☐" if status == "pending" else "▶"
+            print(f"     {status_symbol} {content}")
     else:
-        arg_str = str(args)[:30]
-        if len(str(args)) > 30:
-            arg_str += "..."
-        print(f"  {tool_name}: {arg_str}")
+        args_str = str(args)
+        arg_display = args_str[:30] + "..." if len(args_str) > 30 else args_str
+        print(f"  {tool_name}: {arg_display}")
 
 
-def _process_tool_calls(msg, current_tools: dict, stats: dict, quiet: bool):
+def _process_tool_calls(msg, stats: dict, quiet: bool):
     """Process tool calls from a message, updating stats and optionally printing."""
     if hasattr(msg, "tool_calls") and msg.tool_calls:
         for tool_call in msg.tool_calls:
             tool_name = tool_call.get("name") or tool_call.get("function", {}).get(
                 "name"
             )
-            tool_id = tool_call.get("id")
-            if tool_id:
-                current_tools[tool_id] = tool_name
-
             if tool_name:
                 stats["tool_usage"][tool_name] = (
                     stats["tool_usage"].get(tool_name, 0) + 1
@@ -213,9 +200,6 @@ def _process_tool_calls(msg, current_tools: dict, stats: dict, quiet: bool):
         for tool_call in tool_calls:
             function = tool_call.get("function", {})
             tool_name = function.get("name")
-            tool_id = tool_call.get("id")
-            if tool_id and tool_name:
-                current_tools[tool_id] = tool_name
 
             if tool_name:
                 stats["tool_usage"][tool_name] = (
@@ -225,11 +209,9 @@ def _process_tool_calls(msg, current_tools: dict, stats: dict, quiet: bool):
             if not quiet and tool_name:
                 args_str = function.get("arguments", "{}")
                 try:
-                    import json
-
                     args = json.loads(args_str)
                     _print_tool_progress(tool_name, args)
-                except Exception:
+                except json.JSONDecodeError:
                     print(f"  {tool_name}")
 
 
@@ -243,6 +225,7 @@ def _update_token_stats(msg, stats: dict):
                 "completion_tokens", 0
             )
             stats["token_consumption"]["total_tokens"] += usage.get("total_tokens", 0)
+            return  # Avoid double-counting if both metadata sources exist
 
     if hasattr(msg, "usage_metadata") and msg.usage_metadata:
         stats["token_consumption"]["input_tokens"] += msg.usage_metadata.get(
@@ -285,7 +268,6 @@ def run_agent(
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": limit}
 
     messages = []
-    current_tools = {}
 
     # Initialize statistics
     stats = {
@@ -293,8 +275,6 @@ def run_agent(
         "token_consumption": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
         "execution_time_seconds": 0,
     }
-
-    import time
 
     start_time = time.time()
 
@@ -313,7 +293,7 @@ def run_agent(
                     messages.append(msg)
 
                     # Process tool calls (always update stats, optionally print)
-                    _process_tool_calls(msg, current_tools, stats, quiet)
+                    _process_tool_calls(msg, stats, quiet)
 
                     # Update token statistics
                     _update_token_stats(msg, stats)

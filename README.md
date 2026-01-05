@@ -254,17 +254,32 @@ Add to your MCP settings (e.g., `~/.claude/claude_desktop_config.json` or projec
 | Tool | Description |
 |------|-------------|
 | `python_exec` | Execute Python code. Auto-starts session if needed. Default 30s timeout. |
-| `python_reset` | Clear session state. Optionally install packages (e.g., `packages=["numpy", "pandas"]`). |
-| `python_status` | Check if session is active, Python version, installed packages, defined variables. |
+| `python_reset` | Create new kernel (no `kernel_id`) OR reset existing kernel (with `kernel_id`). Optionally install packages. |
+| `python_status` | Check session state: active flag, all active kernel IDs, Python version, packages, variables. |
 | `python_interrupt` | Send interrupt signal to stop long-running code. Session state is preserved. |
+
+### Multi-Agent Workflow
+
+For parallel agents, each agent gets its own kernel:
+
+```
+Agent A                              Agent B
+────────                             ────────
+python_reset() → kernel_id="aaa"     python_reset() → kernel_id="bbb"
+python_exec(kernel_id="aaa", ...)    python_exec(kernel_id="bbb", ...)
+python_exec(kernel_id="aaa", ...)    python_exec(kernel_id="bbb", ...)
+```
+
+Simple single-agent use: just call `python_exec()` — the default kernel auto-starts.
 
 ### Features
 
 - **Persistent state**: Variables, imports, and definitions persist across executions
-- **Auto-start**: Session starts automatically on first `python_exec`
+- **Auto-start**: Default session starts automatically on first `python_exec`
 - **Package installation**: Use `python_reset` with `packages` parameter to install dependencies
 - **Timeout handling**: Long-running code times out gracefully (session preserved)
 - **Interrupt support**: Stop runaway code without losing session state
+- **Multi-kernel**: Each `python_reset()` creates an isolated kernel for parallel agents
 
 ### Usage Tips
 

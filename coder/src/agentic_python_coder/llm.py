@@ -33,7 +33,10 @@ def get_api_key() -> str:
     if not api_key:
         print("Warning: No API key found. Set up with:", file=sys.stderr)
         print("  mkdir -p ~/.config/coder", file=sys.stderr)
-        print("  echo 'OPENROUTER_API_KEY=sk-or-...' > ~/.config/coder/.env", file=sys.stderr)
+        print(
+            "  echo 'OPENROUTER_API_KEY=sk-or-...' > ~/.config/coder/.env",
+            file=sys.stderr,
+        )
         print("\nOr use: --api-key sk-or-...", file=sys.stderr)
         raise ValueError("OPENROUTER_API_KEY not configured")
 
