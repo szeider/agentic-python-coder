@@ -255,7 +255,7 @@ Add to your MCP settings (e.g., `~/.claude/claude_desktop_config.json` or projec
 |------|-------------|
 | `python_exec` | Execute Python code. Auto-starts session if needed. Default 30s timeout. |
 | `python_reset` | Create new kernel (no `kernel_id`) OR reset existing kernel (with `kernel_id`). Optionally install packages. |
-| `python_status` | Check if session is active, Python version, installed packages, defined variables. |
+| `python_status` | Check session state: active flag, all active kernel IDs, Python version, packages, variables. |
 | `python_interrupt` | Send interrupt signal to stop long-running code. Session state is preserved. |
 
 ### Multi-Agent Workflow

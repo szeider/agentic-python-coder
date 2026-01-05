@@ -18,6 +18,7 @@ from agentic_python_coder.kernel import (
     execute_in_kernel,
     interrupt_kernel_by_id,
     kernel_exists,
+    list_kernels,
     restart_kernel,
 )
 
@@ -224,6 +225,7 @@ Example workflow:
 
 Use to:
 - See if a session is active
+- List all active kernel IDs (all_kernels field)
 - Check what variables are defined
 - Verify installed packages
 - Get Python version info
@@ -389,9 +391,14 @@ versions
         kernel_id = get_kernel_id(arguments)
         is_active = kernel_exists(kernel_id)
 
+        # Get all active kernel IDs
+        all_kernel_info = list_kernels()
+        all_kernel_ids = [k["id"] for k in all_kernel_info]
+
         status = {
             "kernel_id": kernel_id,
             "active": is_active,
+            "all_kernels": all_kernel_ids,
             "python_version": None,
             "packages": [],
             "variables": [],
