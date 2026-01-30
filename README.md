@@ -120,7 +120,7 @@ coder --model deepseek31 "task" # DeepSeek v3.1
 coder --model grok41 "task"     # X.AI Grok 4.1
 coder --model qwen3 "task"      # Qwen3 Coder
 coder --model gemini25 "task"   # Gemini Pro 2.5
-coder --model gpt5 "task"       # GPT-5
+coder --model gpt52 "task"      # GPT-5.2
 
 # Custom model (JSON file)
 coder --model ./mymodel.json "task"
@@ -225,7 +225,7 @@ from agentic_python_coder import get_openrouter_llm, list_available_models
 
 llm = get_openrouter_llm(model="sonnet45")
 print(list_available_models())
-# ['deepseek31', 'gemini25', 'gpt5', 'grok41', 'opus45', 'qwen3', 'sonnet45']
+# ['deepseek31', 'gemini25', 'gpt52', 'grok41', 'opus45', 'qwen3', 'sonnet45']
 ```
 
 ---

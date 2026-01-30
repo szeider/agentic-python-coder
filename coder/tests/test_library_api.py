@@ -47,7 +47,7 @@ def test_model_registry():
         "grok41",
         "qwen3",
         "gemini25",
-        "gpt5",
+        "gpt52",
     ]
     for model in expected_models:
         assert model in models, f"Missing model: {model}"
@@ -145,7 +145,6 @@ def test_verbose_false_suppresses_output():
 def test_global_state_reset():
     """Test that global state is reset between agent creations."""
     from agentic_python_coder import create_coding_agent
-    from agentic_python_coder.tools import _task_basename
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create first agent

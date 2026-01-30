@@ -242,18 +242,30 @@ PYTHON_EXEC_TOOL = Tool(
         "Example:\n"
         "    First call:  x = 5\n"
         '    Second call: print(x)  # Returns: {"success": true, "stdout": "5"}\n\n'
-        "The code executes in the working directory context, so you can read/write files "
-        "using relative paths."
+        "    First call:  def add(a, b): return a + b\n"
+        '    Second call: add(3, 4)  # Returns: {"success": true, "result": "7"}\n\n'
+        "The code executes in the working directory context, so you can read/write files\n"
+        "using relative paths.\n\n"
+        "Args:\n"
+        "    code: Python code to execute. Multi-line code is supported.\n\n"
+        "Returns:\n"
+        "    JSON string with execution results:\n"
+        "    - success: boolean indicating if execution succeeded\n"
+        "    - stdout: captured print output (if any)\n"
+        "    - result: the last expression's value (if any)\n"
+        "    - stderr: warnings (if any)\n"
+        "    - error: error message (if execution failed)"
     ),
     parameters={
         "type": "object",
         "properties": {
             "code": {
                 "type": "string",
-                "description": "Python code to execute. Multi-line code is supported.",
+                "title": "Code",
             },
         },
         "required": ["code"],
+        "title": "python_exec",
     },
     function=python_exec,
 )
@@ -262,18 +274,23 @@ SAVE_CODE_TOOL = Tool(
     name="save_code",
     description=(
         "Save the final code (fileless mode).\n\n"
-        "This saves your code to {basename}_code.py where basename "
-        "is determined from the task file name, or solution.py for inline tasks."
+        "This saves your code to {basename}_code.py where basename\n"
+        "is determined from the task file name, or solution.py for inline tasks.\n\n"
+        "Args:\n"
+        "    code: The complete Python code\n\n"
+        "Returns:\n"
+        "    JSON with success status and file path"
     ),
     parameters={
         "type": "object",
         "properties": {
             "code": {
                 "type": "string",
-                "description": "The complete Python code",
+                "title": "Code",
             },
         },
         "required": ["code"],
+        "title": "save_code",
     },
     function=save_code,
 )
@@ -286,38 +303,26 @@ TODO_WRITE_TOOL = Tool(
         "- id: unique identifier\n"
         "- content: task description\n"
         "- status: 'pending', 'in_progress', or 'completed'\n"
-        "- priority: 'high', 'medium', or 'low'"
+        "- priority: 'high', 'medium', or 'low'\n\n"
+        "Args:\n"
+        "    todos: New list of todo items\n\n"
+        "Returns:\n"
+        "    JSON with success status and count"
     ),
     parameters={
         "type": "object",
         "properties": {
             "todos": {
                 "type": "array",
-                "description": "New list of todo items",
+                "title": "Todos",
                 "items": {
                     "type": "object",
-                    "properties": {
-                        "id": {"type": "string", "description": "Unique identifier"},
-                        "content": {
-                            "type": "string",
-                            "description": "Task description",
-                        },
-                        "status": {
-                            "type": "string",
-                            "enum": ["pending", "in_progress", "completed"],
-                            "description": "Task status",
-                        },
-                        "priority": {
-                            "type": "string",
-                            "enum": ["high", "medium", "low"],
-                            "description": "Task priority",
-                        },
-                    },
-                    "required": ["id", "content", "status", "priority"],
+                    "additionalProperties": True,
                 },
             },
         },
         "required": ["todos"],
+        "title": "todo_write",
     },
     function=todo_write,
 )
