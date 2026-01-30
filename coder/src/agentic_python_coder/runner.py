@@ -44,7 +44,7 @@ def save_conversation_log(
 
     Args:
         working_dir: Directory to save log
-        messages: List of agent messages
+        messages: List of agent messages (dicts from the new format)
         stats: Execution statistics
         task_basename: Base name for log file
 
@@ -56,7 +56,7 @@ def save_conversation_log(
     else:
         log_path = working_dir / "log.jsonl"
 
-    with open(log_path, "w") as f:
+    with open(log_path, "w", encoding="utf-8") as f:
         # Start event
         f.write(
             json.dumps({"event": "start", "task": task_basename or "inline"}) + "\n"
@@ -64,7 +64,85 @@ def save_conversation_log(
 
         # Process messages
         for msg in messages:
-            if hasattr(msg, "tool_calls") and msg.tool_calls:
+            # Handle dict messages (new format)
+            if isinstance(msg, dict):
+                tool_calls = msg.get("tool_calls", [])
+                if tool_calls:
+                    for tool_call in tool_calls:
+                        func = tool_call.get("function", {})
+                        tool_name = func.get("name", "unknown")
+                        try:
+                            tool_args = json.loads(func.get("arguments", "{}"))
+                        except (json.JSONDecodeError, TypeError):
+                            tool_args = {}
+
+                        if tool_name == "todo_write":
+                            todos = tool_args.get("todos", [])
+                            f.write(
+                                json.dumps(
+                                    {
+                                        "event": "todo",
+                                        "action": "update",
+                                        "count": len(todos),
+                                        "tasks": [
+                                            {
+                                                "content": t.get("content", ""),
+                                                "status": t.get("status", ""),
+                                            }
+                                            for t in todos
+                                        ],
+                                    }
+                                )
+                                + "\n"
+                            )
+                        elif tool_name == "python_exec":
+                            f.write(
+                                json.dumps(
+                                    {
+                                        "event": "python_exec",
+                                        "code_length": len(tool_args.get("code", "")),
+                                    }
+                                )
+                                + "\n"
+                            )
+                        elif tool_name == "save_code":
+                            f.write(
+                                json.dumps(
+                                    {
+                                        "event": "save_code",
+                                        "code_length": len(tool_args.get("code", "")),
+                                    }
+                                )
+                                + "\n"
+                            )
+                        else:
+                            f.write(
+                                json.dumps({"event": "tool_call", "tool": tool_name})
+                                + "\n"
+                            )
+
+                # Handle tool responses (role=tool messages with content)
+                elif msg.get("role") == "tool" and isinstance(msg.get("content"), str):
+                    try:
+                        content_data = json.loads(msg["content"])
+                        if "success" in content_data:
+                            f.write(
+                                json.dumps(
+                                    {
+                                        "event": "tool_response",
+                                        "success": content_data.get("success", False),
+                                        "error": content_data.get("error")
+                                        if not content_data.get("success")
+                                        else None,
+                                    }
+                                )
+                                + "\n"
+                            )
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+            # Handle object messages (backward compat)
+            elif hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tool_call in msg.tool_calls:
                     if isinstance(tool_call, dict):
                         tool_name = tool_call.get("name", "unknown")
@@ -117,8 +195,7 @@ def save_conversation_log(
                             json.dumps({"event": "tool_call", "tool": tool_name}) + "\n"
                         )
 
-            # Handle tool responses
-            if hasattr(msg, "content") and isinstance(msg.content, str):
+            elif hasattr(msg, "content") and isinstance(msg.content, str):
                 try:
                     content_data = json.loads(msg.content)
                     if "success" in content_data:

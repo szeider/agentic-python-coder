@@ -2,12 +2,12 @@
 """Test to verify that todo_write tool availability matches the --todo flag."""
 
 import tempfile
-from agentic_python_coder.agent import create_coding_agent
+from agentic_python_coder.agent import create_coding_agent, CodingAgent
 from agentic_python_coder.runner import get_system_prompt_path
 
 
 def test_agent_tools_without_todo():
-    """Test that agent can be created without --todo flag."""
+    """Test that agent created without --todo flag has no todo_write tool."""
     with tempfile.TemporaryDirectory() as tmpdir:
         agent = create_coding_agent(
             working_directory=tmpdir,
@@ -16,11 +16,14 @@ def test_agent_tools_without_todo():
             todo=False,
         )
         assert agent is not None
-        assert hasattr(agent, "_coder_metadata")
+        assert isinstance(agent, CodingAgent)
+        assert "python_exec" in agent.tools
+        assert "save_code" in agent.tools
+        assert "todo_write" not in agent.tools
 
 
 def test_agent_tools_with_todo():
-    """Test that agent can be created with --todo flag."""
+    """Test that agent created with --todo flag has todo_write tool."""
     with tempfile.TemporaryDirectory() as tmpdir:
         agent = create_coding_agent(
             working_directory=tmpdir,
@@ -29,7 +32,10 @@ def test_agent_tools_with_todo():
             todo=True,
         )
         assert agent is not None
-        assert hasattr(agent, "_coder_metadata")
+        assert isinstance(agent, CodingAgent)
+        assert "python_exec" in agent.tools
+        assert "save_code" in agent.tools
+        assert "todo_write" in agent.tools
 
 
 def test_prompt_path_default():
@@ -48,4 +54,5 @@ def test_prompt_path_todo():
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

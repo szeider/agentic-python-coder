@@ -286,7 +286,8 @@ async def call_tool(name: str, arguments: dict):
             elif kernel_exists(kernel_id):
                 # kernel_id provided and exists: RESET it
                 await loop.run_in_executor(
-                    None, lambda: restart_kernel(kernel_id, packages if packages else None)
+                    None,
+                    lambda: restart_kernel(kernel_id, packages if packages else None),
                 )
             else:
                 # kernel_id provided but doesn't exist: error
@@ -364,7 +365,11 @@ versions
         code = arguments.get("code", "")
         raw_timeout = arguments.get("timeout")
         try:
-            timeout = min(float(raw_timeout), MAX_TIMEOUT) if raw_timeout is not None else DEFAULT_TIMEOUT
+            timeout = (
+                min(float(raw_timeout), MAX_TIMEOUT)
+                if raw_timeout is not None
+                else DEFAULT_TIMEOUT
+            )
         except (TypeError, ValueError):
             timeout = DEFAULT_TIMEOUT
         kernel_id = get_kernel_id(arguments)

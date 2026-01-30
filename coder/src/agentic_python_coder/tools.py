@@ -1,11 +1,68 @@
 """Tools for the Python coding agent."""
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Dict, Any
-from langchain_core.tools import tool
+from typing import List, Dict, Any, Callable
 
 from .kernel import get_kernel, format_output
+
+
+@dataclass
+class Tool:
+    """A tool that the agent can use."""
+
+    name: str
+    description: str
+    parameters: dict[str, Any]  # JSON Schema for parameters
+    function: Callable[..., Any]
+
+    def to_openai_tool(self) -> dict[str, Any]:
+        """Convert to OpenAI tool format."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+    def execute(self, **kwargs: Any) -> str:
+        """Execute the tool and return result as string.
+
+        Functions already return JSON strings, so pass through verbatim.
+        """
+        return self.function(**kwargs)
+
+
+class ToolRegistry:
+    """Registry of available tools."""
+
+    def __init__(self) -> None:
+        self._tools: dict[str, Tool] = {}
+
+    def register(self, tool: Tool) -> None:
+        """Register a tool."""
+        self._tools[tool.name] = tool
+
+    def get(self, name: str) -> Tool | None:
+        """Get a tool by name."""
+        return self._tools.get(name)
+
+    def has(self, name: str) -> bool:
+        """Check if a tool is registered."""
+        return name in self._tools
+
+    def get_openai_tools(self) -> list[dict[str, Any]]:
+        """Get all tools in OpenAI format."""
+        return [tool.to_openai_tool() for tool in self._tools.values()]
+
+    def __len__(self) -> int:
+        return len(self._tools)
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._tools
 
 
 class WorkingDirectory:
@@ -69,11 +126,10 @@ def error_response(error: str, **kwargs) -> str:
     return json.dumps(response, indent=2)
 
 
-# Todo management tools
+# Todo management
 _todos = []
 
 
-@tool
 def todo_write(todos: List[Dict[str, Any]]) -> str:
     """Replace the entire task list with validation.
 
@@ -82,12 +138,6 @@ def todo_write(todos: List[Dict[str, Any]]) -> str:
     - content: task description
     - status: 'pending', 'in_progress', or 'completed'
     - priority: 'high', 'medium', or 'low'
-
-    Args:
-        todos: New list of todo items
-
-    Returns:
-        JSON with success status and count
     """
     try:
         # Validate only one in_progress
@@ -113,38 +163,9 @@ def todo_write(todos: List[Dict[str, Any]]) -> str:
         return error_response(f"Error updating todos: {str(e)}")
 
 
-# Python execution tool
-@tool
+# Python execution
 def python_exec(code: str) -> str:
-    """Execute Python code in a persistent IPython kernel.
-
-    IMPORTANT: The kernel maintains state between executions!
-    - Variables, functions, and imports persist across calls
-    - Use print() to see output, or the last expression will be returned
-    - The kernel runs in the working directory context
-
-    Example:
-        First call:  x = 5
-        Second call: print(x)  # Returns: {"success": true, "stdout": "5"}
-
-        First call:  def add(a, b): return a + b
-        Second call: add(3, 4)  # Returns: {"success": true, "result": "7"}
-
-    The code executes in the working directory context, so you can read/write files
-    using relative paths.
-
-    Args:
-        code: Python code to execute. Multi-line code is supported.
-
-    Returns:
-        JSON string with execution results:
-        - success: boolean indicating if execution succeeded
-        - stdout: captured print output (if any)
-        - result: the last expression's value (if any)
-        - stderr: warnings (if any)
-        - error: error message (if execution failed)
-    """
-    # Check if we're in dynamic package mode
+    """Execute Python code in a persistent IPython kernel."""
     import os
 
     with_packages = None
@@ -153,17 +174,11 @@ def python_exec(code: str) -> str:
         with_packages = packages_str.split(",") if packages_str else []
 
     try:
-        # Get the persistent kernel with the working directory
         kernel = get_kernel(cwd=str(working_dir.get()), with_packages=with_packages)
-
-        # Execute the user's code
         output = kernel.execute(code)
-
-        # Format and return the output
         return format_output(output)
 
     except RuntimeError as e:
-        # Kernel startup failed - return user-friendly error
         error_msg = str(e)
         if "UV is required" in error_msg:
             return error_response(
@@ -176,11 +191,10 @@ def python_exec(code: str) -> str:
             return error_response(f"Kernel error: {error_msg}")
 
     except Exception as e:
-        # Unexpected error
         return error_response(f"Unexpected error executing code: {str(e)}")
 
 
-# Fileless mode tools
+# File saving
 _task_basename = None
 
 
@@ -190,29 +204,16 @@ def set_task_basename(basename: str):
     _task_basename = basename
 
 
-@tool
 def save_code(code: str) -> str:
-    """Save the final code (fileless mode).
-
-    This saves your code to {basename}_code.py where basename
-    is determined from the task file name, or solution.py for inline tasks.
-
-    Args:
-        code: The complete Python code
-
-    Returns:
-        JSON with success status and file path
-    """
+    """Save the final code (fileless mode)."""
     try:
         global _task_basename
 
-        # Determine output filename
         if _task_basename:
             filename = f"{_task_basename}_code.py"
         else:
             filename = "solution.py"
 
-        # Save to working directory
         output_path = working_dir.get() / filename
         output_path.write_text(code)
 
@@ -222,10 +223,118 @@ def save_code(code: str) -> str:
 
 
 def reset_global_state():
-    """Reset all global state to avoid accumulation across runs.
-
-    Called by create_coding_agent() to ensure clean state for each new agent.
-    """
+    """Reset all global state to avoid accumulation across runs."""
     global _todos, _task_basename
     _todos = []
     _task_basename = None
+
+
+# Tool definitions with explicit JSON schemas
+
+PYTHON_EXEC_TOOL = Tool(
+    name="python_exec",
+    description=(
+        "Execute Python code in a persistent IPython kernel.\n\n"
+        "IMPORTANT: The kernel maintains state between executions!\n"
+        "- Variables, functions, and imports persist across calls\n"
+        "- Use print() to see output, or the last expression will be returned\n"
+        "- The kernel runs in the working directory context\n\n"
+        "Example:\n"
+        "    First call:  x = 5\n"
+        '    Second call: print(x)  # Returns: {"success": true, "stdout": "5"}\n\n'
+        "The code executes in the working directory context, so you can read/write files "
+        "using relative paths."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "code": {
+                "type": "string",
+                "description": "Python code to execute. Multi-line code is supported.",
+            },
+        },
+        "required": ["code"],
+    },
+    function=python_exec,
+)
+
+SAVE_CODE_TOOL = Tool(
+    name="save_code",
+    description=(
+        "Save the final code (fileless mode).\n\n"
+        "This saves your code to {basename}_code.py where basename "
+        "is determined from the task file name, or solution.py for inline tasks."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "code": {
+                "type": "string",
+                "description": "The complete Python code",
+            },
+        },
+        "required": ["code"],
+    },
+    function=save_code,
+)
+
+TODO_WRITE_TOOL = Tool(
+    name="todo_write",
+    description=(
+        "Replace the entire task list with validation.\n\n"
+        "Each task should have:\n"
+        "- id: unique identifier\n"
+        "- content: task description\n"
+        "- status: 'pending', 'in_progress', or 'completed'\n"
+        "- priority: 'high', 'medium', or 'low'"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "todos": {
+                "type": "array",
+                "description": "New list of todo items",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "description": "Unique identifier"},
+                        "content": {
+                            "type": "string",
+                            "description": "Task description",
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": ["pending", "in_progress", "completed"],
+                            "description": "Task status",
+                        },
+                        "priority": {
+                            "type": "string",
+                            "enum": ["high", "medium", "low"],
+                            "description": "Task priority",
+                        },
+                    },
+                    "required": ["id", "content", "status", "priority"],
+                },
+            },
+        },
+        "required": ["todos"],
+    },
+    function=todo_write,
+)
+
+
+def create_tool_registry(todo: bool = False) -> ToolRegistry:
+    """Create a tool registry with the standard coding tools.
+
+    Args:
+        todo: If True, include the todo_write tool.
+
+    Returns:
+        ToolRegistry with registered tools.
+    """
+    registry = ToolRegistry()
+    registry.register(PYTHON_EXEC_TOOL)
+    registry.register(SAVE_CODE_TOOL)
+    if todo:
+        registry.register(TODO_WRITE_TOOL)
+    return registry
