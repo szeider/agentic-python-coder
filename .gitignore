@@ -154,6 +154,7 @@ uv.lock
 # Project specific
 coder-examples/
 CLAUDE-archive.md
+EXPERTISE/
 PROCESS_NOTES.md
 conversation_log.json
 coder_output.log
