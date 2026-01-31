@@ -172,9 +172,6 @@ PAPER/
 PAPER-ASP/
 ZEBRA/
 .mcp.json
-examples/cpmpy/cpmpy_v*.md
-examples/cpmpy/cpmpy.md.backup-*
-examples/clingo/clingo_v*.md
 
 # Test files and folders (root level only)
 /test-*/

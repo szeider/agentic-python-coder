@@ -31,6 +31,17 @@ else:
 - `AllDifferent(vars)` - all different values
 - `sum(vars) == total` - sum constraint
 - `Circuit(x)` - variables x form a Hamiltonian circuit (for routing/tour problems)
+- `InDomain(var, [values])` - restrict variable to a set of values (import from cpmpy)
+- Logical: `&`, `|`, `~` on constraints; `(cond).implies(other)` on constraints only
+- Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=` between variables and expressions
+- Element: `vars[idx]` where idx is a decision variable (direct indexing works)
+
+## CPMpy Pitfalls - Avoid These
+- Do NOT use `.is_in()`, `.in_domain()`, or other methods that don't exist — use `InDomain(var, list)` instead
+- Do NOT use `~var` on integer variables — `~` only works on boolean constraints
+- Do NOT call `.implies()` on integer variables — only on boolean expressions/constraints
+- If an operator/method fails, fall back to explicit OR/AND over individual equality constraints
+- When in doubt, use simple comparisons and loops instead of advanced abstractions
 
 ## Optimization
 - Use `model.minimize(objective)` or `model.maximize(objective)`
@@ -44,5 +55,3 @@ else:
   ```
 
 That's it. Read the problem carefully, model it declaratively, and let CPMpy find the optimal solution.
-
-**Critical:** Use CPMpy constraints only—never implement search algorithms (BFS, DFS, etc.). Always verify your solution satisfies all problem constraints.

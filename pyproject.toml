@@ -59,8 +59,6 @@ exclude = [
     ".mcp.json",
     "*.jsonl",
     "*_code.py",
-    "examples/cpmpy/cpmpy_*.md",
-    "examples/clingo/clingo_*.md",
     "RELEASE_NOTES_*.md",
 ]
 
@@ -76,7 +74,7 @@ pythonpath = ["coder/src"]
 [tool.ruff]
 target-version = "py313"
 line-length = 88
-exclude = ["CPBENCH", "LOCAL", "TRASH", "examples"]
+exclude = ["CPBENCH", "LOCAL", "TRASH"]
 
 [tool.mypy]
 python_version = "3.13"
