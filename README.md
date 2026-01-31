@@ -4,11 +4,10 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io/)
 [![UV](https://img.shields.io/badge/Packaged%20with-UV-purple)](https://github.com/astral-sh/uv)
-[![LangGraph](https://img.shields.io/badge/Built%20with-LangGraph-green)](https://github.com/langchain-ai/langgraph)
 
 This package provides two utilities for Python code execution:
 
-1. **coder** — An autonomous coding agent using the ReAct framework (CLI + Python library)
+1. **coder** — An autonomous coding agent using the ReAct pattern (CLI + Python library)
 2. **ipython_mcp** — An MCP server that gives any MCP-compatible client (Claude Desktop, etc.) Python execution capability
 
 Both share a persistent IPython kernel for stateful code execution.
