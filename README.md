@@ -118,8 +118,9 @@ coder --model opus45 "task"     # Claude Opus 4.5
 coder --model deepseek31 "task" # DeepSeek v3.1
 coder --model grok41 "task"     # X.AI Grok 4.1
 coder --model qwen3 "task"      # Qwen3 Coder
-coder --model gemini25 "task"   # Gemini Pro 2.5
-coder --model gpt52 "task"      # GPT-5.2
+coder --model gemini25 "task"     # Gemini Pro 2.5
+coder --model gemini3pro "task"  # Gemini 3 Pro Preview
+coder --model gpt52 "task"       # GPT-5.2
 
 # Custom model (JSON file)
 coder --model ./mymodel.json "task"
@@ -127,16 +128,17 @@ coder --model ./mymodel.json "task"
 
 ### Project Templates
 
-Domain-specific templates improve results:
+Domain-specific templates improve results. Bundled examples are available on GitHub at [`coder/src/agentic_python_coder/examples/`](coder/src/agentic_python_coder/examples/). Use `--init` to copy them locally:
 
 ```bash
-# Initialize example templates (creates coder-examples/ directory)
+# Copy all bundled examples to coder-examples/
 coder --init
 
-# Constraint programming with CPMpy
-coder --with cpmpy --project coder-examples/cpmpy/cpmpy.md "Solve 8-queens"
+# Or copy a specific template
+coder --init cpmpy
 
-# Answer Set Programming with Clingo
+# Then use with your task
+coder --with cpmpy --project coder-examples/cpmpy/cpmpy.md "Solve 8-queens"
 coder --with clingo --project coder-examples/clingo/clingo.md "Model bird flight"
 ```
 
@@ -224,7 +226,7 @@ from agentic_python_coder import get_openrouter_llm, list_available_models
 
 llm = get_openrouter_llm(model="sonnet45")
 print(list_available_models())
-# ['deepseek31', 'gemini25', 'gpt52', 'grok41', 'opus45', 'qwen3', 'sonnet45']
+# ['deepseek31', 'gemini25', 'gemini3pro', 'gpt52', 'grok41', 'opus45', 'qwen3', 'sonnet45']
 ```
 
 ---
