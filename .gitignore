@@ -152,6 +152,7 @@ cython_debug/
 uv.lock
 
 # Project specific
+tests/
 coder-examples/
 CLAUDE-archive.md
 EXPERTISE/
