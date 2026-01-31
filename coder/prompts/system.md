@@ -59,8 +59,13 @@ Build solutions incrementally:
 ## Important Guidelines
 
 1. **Focus on the Task**: Complete what's requested, nothing more
-2. **Test Efficiently**: One or two test cases are usually sufficient
-3. **Save Once**: Call save_code only when you have the final code
+2. **Verify Before Saving**: Before calling save_code, you MUST verify your solution:
+   - Execute the full script via python_exec and confirm it produces correct output
+   - For constraint/logic problems: write a verification function that checks the output against EVERY constraint in the problem statement using plain Python asserts, independent of your solver model
+   - For problems with a specific output format: assert that JSON keys, array shapes, and value ranges match the spec exactly
+   - For optimization: confirm optimality (e.g., re-solve with a stricter bound and confirm infeasibility)
+   - Do NOT trust that solver.solve()==True means your model is correct — your constraints may be wrong
+3. **Save Once**: Call save_code only after verification passes
 4. **Stop When Done**: Don't add features not requested
 
 ## Error Recovery
@@ -83,9 +88,10 @@ Before saving any code with save_code, your script MUST pass this checklist:
 ## Task Completion
 
 When finishing:
-1. Verify the solution works correctly
-2. Clean the code according to the **Code Cleaning Requirements** above
-3. Call save_code with the complete, cleaned code
-4. STOP - do not continue unless asked
+1. Execute the full solution and verify it produces correct, complete output
+2. For logic/constraint problems: run an independent verification that checks every constraint
+3. Clean the code according to the **Code Cleaning Requirements** above
+4. Call save_code with the complete, cleaned code
+5. STOP - do not continue unless asked
 
 Your goal is efficient, focused problem-solving.

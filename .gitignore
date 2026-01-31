@@ -152,8 +152,10 @@ cython_debug/
 uv.lock
 
 # Project specific
+tests/
 coder-examples/
 CLAUDE-archive.md
+EXPERTISE/
 PROCESS_NOTES.md
 conversation_log.json
 coder_output.log
@@ -171,9 +173,6 @@ PAPER/
 PAPER-ASP/
 ZEBRA/
 .mcp.json
-examples/cpmpy/cpmpy_v*.md
-examples/cpmpy/cpmpy.md.backup-*
-examples/clingo/clingo_v*.md
 
 # Test files and folders (root level only)
 /test-*/

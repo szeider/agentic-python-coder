@@ -3,14 +3,26 @@
 import json
 import os
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
+from openai import OpenAI
 
 # Default model name (without .json)
 DEFAULT_MODEL = "sonnet45"
+
+
+@dataclass
+class LLMConfig:
+    """Configuration for an LLM via OpenRouter."""
+
+    client: OpenAI
+    model: str  # e.g. "anthropic/claude-sonnet-4.5"
+    api_params: dict[str, Any] = field(
+        default_factory=dict
+    )  # temperature, max_tokens, etc.
 
 
 def get_api_key() -> str:
@@ -117,8 +129,8 @@ def get_openrouter_llm(
     model: str = DEFAULT_MODEL,
     api_key: str | None = None,
     verbose: bool = False,
-) -> ChatOpenAI:
-    """Create a fully configured OpenRouter LLM instance.
+) -> LLMConfig:
+    """Create a fully configured LLMConfig for OpenRouter.
 
     Args:
         model: Model name (e.g., "sonnet45") or path to JSON file
@@ -126,7 +138,7 @@ def get_openrouter_llm(
         verbose: If True, print model info to console
 
     Returns:
-        Fully configured ChatOpenAI instance
+        LLMConfig with configured OpenAI client
 
     Raises:
         FileNotFoundError: If model config not found
@@ -147,47 +159,42 @@ def get_openrouter_llm(
     if not api_key:
         api_key = get_api_key()
 
-    # Create base kwargs
-    streaming = config.get("streaming", True)
-    llm_kwargs = {
-        "model": model_path,
-        "openai_api_key": api_key,
-        "openai_api_base": "https://openrouter.ai/api/v1",
+    # Build client kwargs
+    client_kwargs: dict[str, Any] = {
+        "api_key": api_key,
+        "base_url": "https://openrouter.ai/api/v1",
         "default_headers": {
             "HTTP-Referer": "https://github.com/szeider/agentic-python-coder",
             "X-Title": "Agentic Python Coder",
         },
-        "streaming": streaming,
     }
 
-    # Only include stream_options when streaming is enabled
-    if streaming:
-        llm_kwargs["model_kwargs"] = {"stream_options": {"include_usage": True}}
-    else:
-        llm_kwargs["model_kwargs"] = {}
+    # Add request_timeout as client timeout
+    if "request_timeout" in config:
+        client_kwargs["timeout"] = config["request_timeout"]
 
-    # Handle models that don't accept sampling parameters (e.g., GPT-5)
+    client = OpenAI(**client_kwargs)
+
+    # Build api_params (passed to chat.completions.create)
+    api_params: dict[str, Any] = {}
+
     if config.get("no_sampling_params"):
+        # Models like GPT-5 that don't accept sampling parameters
         if "max_tokens" in config:
-            llm_kwargs["max_tokens"] = config["max_tokens"]
+            api_params["max_tokens"] = config["max_tokens"]
     else:
         # Standard parameters
-        if "temperature" in config:
-            llm_kwargs["temperature"] = config["temperature"]
-        if "max_tokens" in config:
-            llm_kwargs["max_tokens"] = config["max_tokens"]
-        if "top_p" in config:
-            llm_kwargs["top_p"] = config["top_p"]
+        for key in (
+            "temperature",
+            "max_tokens",
+            "top_p",
+            "frequency_penalty",
+            "presence_penalty",
+        ):
+            if key in config:
+                api_params[key] = config[key]
         if "top_k" in config:
-            # Pass via model_kwargs for OpenRouter compatibility
-            llm_kwargs["model_kwargs"]["top_k"] = config["top_k"]
-        if "frequency_penalty" in config:
-            llm_kwargs["frequency_penalty"] = config["frequency_penalty"]
-        if "presence_penalty" in config:
-            llm_kwargs["presence_penalty"] = config["presence_penalty"]
+            # OpenRouter supports top_k via extra_body
+            api_params["extra_body"] = {"top_k": config["top_k"]}
 
-    # Add request_timeout for models that need it
-    if "request_timeout" in config:
-        llm_kwargs["request_timeout"] = config["request_timeout"]
-
-    return ChatOpenAI(**llm_kwargs)
+    return LLMConfig(client=client, model=model_path, api_params=api_params)

@@ -1,12 +1,13 @@
-"""Python Coding Agent - A minimal coding assistant using LangGraph and OpenRouter."""
+"""Python Coding Agent - A minimal coding assistant using direct OpenAI API and OpenRouter."""
 
-__version__ = "2.3.0"
+__version__ = "3.0.0"
 
 # High-level API (recommended for most users)
 from agentic_python_coder.runner import solve_task
 
 # Lower-level API (for custom workflows)
 from agentic_python_coder.agent import (
+    CodingAgent,
     create_coding_agent,
     run_agent,
     get_final_response,
@@ -15,10 +16,18 @@ from agentic_python_coder.agent import (
 
 # LLM utilities
 from agentic_python_coder.llm import (
+    LLMConfig,
     get_openrouter_llm,
     load_model_config,
     list_available_models,
     DEFAULT_MODEL,
+)
+
+# Tool system
+from agentic_python_coder.tools import (
+    Tool,
+    ToolRegistry,
+    create_tool_registry,
 )
 
 # Kernel management (multi-kernel API)
@@ -48,15 +57,21 @@ __all__ = [
     # High-level
     "solve_task",
     # Low-level agent
+    "CodingAgent",
     "create_coding_agent",
     "run_agent",
     "get_final_response",
     "DEFAULT_STEP_LIMIT",
     # LLM
+    "LLMConfig",
     "get_openrouter_llm",
     "load_model_config",
     "list_available_models",
     "DEFAULT_MODEL",
+    # Tool system
+    "Tool",
+    "ToolRegistry",
+    "create_tool_registry",
     # Kernel management
     "create_kernel",
     "execute_in_kernel",

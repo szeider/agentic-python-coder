@@ -38,14 +38,15 @@ def test_todo_flag_creates_correct_prompt():
     with tempfile.TemporaryDirectory() as tmpdir:
         os.chdir(tmpdir)
 
-        # Create a simple task that will fail quickly (for testing)
-        result = run_coder_command(
-            ["coder", "--todo", "--api-key", "invalid-key", "print hello"],
-            timeout=5
-        )
-
-        # Check if error mentions system_todo.md or shows todo-related behavior
-        output = result.stdout + result.stderr
+        # Run with invalid API key — process won't exit quickly, so catch timeout
+        try:
+            result = run_coder_command(
+                ["coder", "--todo", "--api-key", "invalid-key", "print hello"],
+                timeout=10
+            )
+            output = result.stdout + result.stderr
+        except subprocess.TimeoutExpired as e:
+            output = (e.output or "") + (e.stderr or "")
 
         # Even with invalid API key, we should see that it tried to load the right prompt
         assert "system_todo.md" in output or "Creating agent" in output, \

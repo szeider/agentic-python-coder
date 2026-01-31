@@ -4,11 +4,10 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io/)
 [![UV](https://img.shields.io/badge/Packaged%20with-UV-purple)](https://github.com/astral-sh/uv)
-[![LangGraph](https://img.shields.io/badge/Built%20with-LangGraph-green)](https://github.com/langchain-ai/langgraph)
 
 This package provides two utilities for Python code execution:
 
-1. **coder** — An autonomous coding agent using the ReAct framework (CLI + Python library)
+1. **coder** — An autonomous coding agent using the ReAct pattern (CLI + Python library)
 2. **ipython_mcp** — An MCP server that gives any MCP-compatible client (Claude Desktop, etc.) Python execution capability
 
 Both share a persistent IPython kernel for stateful code execution.
@@ -119,8 +118,9 @@ coder --model opus45 "task"     # Claude Opus 4.5
 coder --model deepseek31 "task" # DeepSeek v3.1
 coder --model grok41 "task"     # X.AI Grok 4.1
 coder --model qwen3 "task"      # Qwen3 Coder
-coder --model gemini25 "task"   # Gemini Pro 2.5
-coder --model gpt5 "task"       # GPT-5
+coder --model gemini25 "task"     # Gemini Pro 2.5
+coder --model gemini3pro "task"  # Gemini 3 Pro Preview
+coder --model gpt52 "task"       # GPT-5.2
 
 # Custom model (JSON file)
 coder --model ./mymodel.json "task"
@@ -128,16 +128,17 @@ coder --model ./mymodel.json "task"
 
 ### Project Templates
 
-Domain-specific templates improve results:
+Domain-specific templates improve results. Bundled examples are available on GitHub at [`coder/src/agentic_python_coder/examples/`](coder/src/agentic_python_coder/examples/). Use `--init` to copy them locally:
 
 ```bash
-# Initialize example templates (creates coder-examples/ directory)
+# Copy all bundled examples to coder-examples/
 coder --init
 
-# Constraint programming with CPMpy
-coder --with cpmpy --project coder-examples/cpmpy/cpmpy.md "Solve 8-queens"
+# Or copy a specific template
+coder --init cpmpy
 
-# Answer Set Programming with Clingo
+# Then use with your task
+coder --with cpmpy --project coder-examples/cpmpy/cpmpy.md "Solve 8-queens"
 coder --with clingo --project coder-examples/clingo/clingo.md "Model bird flight"
 ```
 
@@ -225,7 +226,7 @@ from agentic_python_coder import get_openrouter_llm, list_available_models
 
 llm = get_openrouter_llm(model="sonnet45")
 print(list_available_models())
-# ['deepseek31', 'gemini25', 'gpt5', 'grok41', 'opus45', 'qwen3', 'sonnet45']
+# ['deepseek31', 'gemini25', 'gemini3pro', 'gpt52', 'grok41', 'opus45', 'qwen3', 'sonnet45']
 ```
 
 ---

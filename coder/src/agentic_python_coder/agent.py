@@ -3,16 +3,14 @@
 import json
 import os
 import time
+from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional
 from pathlib import Path
-from langchain.agents import create_agent
-from langgraph.checkpoint.memory import InMemorySaver
 
-from agentic_python_coder.llm import get_openrouter_llm
+from agentic_python_coder.llm import get_openrouter_llm, LLMConfig, DEFAULT_MODEL
 from agentic_python_coder.tools import (
-    todo_write,
-    python_exec,
-    save_code,
+    ToolRegistry,
+    create_tool_registry,
     working_dir,
     set_task_basename,
     reset_global_state,
@@ -29,6 +27,17 @@ def load_prompt(prompt_path: Path) -> str:
     return prompt_path.read_text()
 
 
+@dataclass
+class CodingAgent:
+    """A ReAct coding agent using direct OpenAI API calls."""
+
+    llm_config: LLMConfig
+    tools: ToolRegistry
+    system_prompt: str
+    working_directory: str
+    messages: list = field(default_factory=list)  # persistent for interactive mode
+
+
 def create_coding_agent(
     working_directory: str,
     system_prompt: Optional[str] = None,
@@ -41,7 +50,7 @@ def create_coding_agent(
     api_key: Optional[str] = None,
     todo: bool = False,
     verbose: bool = False,
-):
+) -> CodingAgent:
     """Create a ReAct agent for Python coding tasks.
 
     Args:
@@ -58,7 +67,7 @@ def create_coding_agent(
         verbose: If True, print progress info (default False for library use)
 
     Returns:
-        Configured LangGraph agent with metadata
+        Configured CodingAgent
     """
     # Reset global state to avoid accumulation across runs
     reset_global_state()
@@ -67,22 +76,21 @@ def create_coding_agent(
     if task_basename:
         set_task_basename(task_basename)
 
-    # Store packages for kernel initialization
+    # Store packages for kernel initialization (clear if None to avoid state leaks)
     if with_packages is not None:
         os.environ["CODER_WITH_PACKAGES"] = ",".join(with_packages)
+    else:
+        os.environ.pop("CODER_WITH_PACKAGES", None)
 
-    # Get LLM instance
-    llm = get_openrouter_llm(
-        model=model or "default",
+    # Get LLM config
+    llm_config = get_openrouter_llm(
+        model=model or DEFAULT_MODEL,
         api_key=api_key,
         verbose=verbose,
     )
 
-    # Minimal tool set
-    if todo:
-        tools = [python_exec, save_code, todo_write]
-    else:
-        tools = [python_exec, save_code]
+    # Create tool registry
+    tools = create_tool_registry(todo=todo)
 
     # Build combined prompt
     prompts = []
@@ -107,18 +115,12 @@ def create_coding_agent(
 
     combined_prompt = "\n\n".join(prompts)
 
-    # Create the agent with memory
-    checkpointer = InMemorySaver()
-    agent = create_agent(
-        llm, tools, system_prompt=combined_prompt, checkpointer=checkpointer
+    return CodingAgent(
+        llm_config=llm_config,
+        tools=tools,
+        system_prompt=combined_prompt,
+        working_directory=working_directory,
     )
-
-    # Store metadata for run_agent to use
-    agent._coder_metadata = {
-        "working_directory": working_directory,
-    }
-
-    return agent
 
 
 def _print_tool_progress(tool_name: str, args: dict):
@@ -168,7 +170,9 @@ def _print_tool_progress(tool_name: str, args: dict):
         for todo in todos:
             status = todo.get("status", "")
             content = todo.get("content", "")
-            status_symbol = "☒" if status == "completed" else "☐" if status == "pending" else "▶"
+            status_symbol = (
+                "☒" if status == "completed" else "☐" if status == "pending" else "▶"
+            )
             print(f"     {status_symbol} {content}")
     else:
         args_str = str(args)
@@ -176,98 +180,30 @@ def _print_tool_progress(tool_name: str, args: dict):
         print(f"  {tool_name}: {arg_display}")
 
 
-def _process_tool_calls(msg, stats: dict, quiet: bool):
-    """Process tool calls from a message, updating stats and optionally printing."""
-    if hasattr(msg, "tool_calls") and msg.tool_calls:
-        for tool_call in msg.tool_calls:
-            tool_name = tool_call.get("name") or tool_call.get("function", {}).get(
-                "name"
-            )
-            if tool_name:
-                stats["tool_usage"][tool_name] = (
-                    stats["tool_usage"].get(tool_name, 0) + 1
-                )
-
-            if not quiet and tool_name:
-                args = tool_call.get("args", {})
-                if isinstance(args, dict):
-                    _print_tool_progress(tool_name, args)
-                else:
-                    print(f"  {tool_name}")
-
-    elif hasattr(msg, "additional_kwargs"):
-        tool_calls = msg.additional_kwargs.get("tool_calls", [])
-        for tool_call in tool_calls:
-            function = tool_call.get("function", {})
-            tool_name = function.get("name")
-
-            if tool_name:
-                stats["tool_usage"][tool_name] = (
-                    stats["tool_usage"].get(tool_name, 0) + 1
-                )
-
-            if not quiet and tool_name:
-                args_str = function.get("arguments", "{}")
-                try:
-                    args = json.loads(args_str)
-                    _print_tool_progress(tool_name, args)
-                except json.JSONDecodeError:
-                    print(f"  {tool_name}")
-
-
-def _update_token_stats(msg, stats: dict):
-    """Extract and update token usage statistics from a message."""
-    if hasattr(msg, "response_metadata"):
-        usage = msg.response_metadata.get("usage", {})
-        if usage:
-            stats["token_consumption"]["input_tokens"] += usage.get("prompt_tokens", 0)
-            stats["token_consumption"]["output_tokens"] += usage.get(
-                "completion_tokens", 0
-            )
-            stats["token_consumption"]["total_tokens"] += usage.get("total_tokens", 0)
-            return  # Avoid double-counting if both metadata sources exist
-
-    if hasattr(msg, "usage_metadata") and msg.usage_metadata:
-        stats["token_consumption"]["input_tokens"] += msg.usage_metadata.get(
-            "input_tokens", 0
-        )
-        stats["token_consumption"]["output_tokens"] += msg.usage_metadata.get(
-            "output_tokens", 0
-        )
-        stats["token_consumption"]["total_tokens"] += msg.usage_metadata.get(
-            "total_tokens", 0
-        )
-
-
 def run_agent(
-    agent,
+    agent: CodingAgent,
     user_input: str,
     thread_id: str = "default",
     quiet: bool = False,
     step_limit: Optional[int] = None,
 ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Run the agent with user input.
+    """Run the agent with user input using a manual ReAct loop.
 
     Args:
-        agent: The LangGraph agent (from create_coding_agent)
+        agent: The CodingAgent (from create_coding_agent)
         user_input: User's request
-        thread_id: Thread ID for conversation memory
+        thread_id: Thread ID (kept for backward compat, ignored)
         quiet: If True, suppress all console output (default False)
         step_limit: Maximum agent steps before stopping (default: 200)
 
     Returns:
-        Tuple of (List of messages from the agent, Statistics dictionary)
+        Tuple of (List of new messages from this call, Statistics dictionary)
     """
     # Set working directory at execution time (not creation time)
     # This prevents race conditions when multiple agents are created
-    metadata = getattr(agent, "_coder_metadata", {})
-    if "working_directory" in metadata:
-        working_dir.set(metadata["working_directory"])
+    working_dir.set(agent.working_directory)
 
     limit = step_limit if step_limit is not None else DEFAULT_STEP_LIMIT
-    config = {"configurable": {"thread_id": thread_id}, "recursion_limit": limit}
-
-    messages = []
 
     # Initialize statistics
     stats = {
@@ -278,69 +214,154 @@ def run_agent(
 
     start_time = time.time()
 
-    # Stream the agent's work
-    for chunk in agent.stream(
-        {"messages": [{"role": "user", "content": user_input}]},
-        config=config,
-        stream_mode="updates",
-    ):
-        if chunk:
-            node_name = next(iter(chunk.keys()))
-            node_output = chunk[node_name]
+    # Seed messages if empty (first call)
+    if not agent.messages:
+        agent.messages.append({"role": "system", "content": agent.system_prompt})
 
-            if "messages" in node_output:
-                for msg in node_output["messages"]:
-                    messages.append(msg)
+    # Track where new messages start
+    new_messages_start = len(agent.messages)
 
-                    # Process tool calls (always update stats, optionally print)
-                    _process_tool_calls(msg, stats, quiet)
+    # Append user message
+    agent.messages.append({"role": "user", "content": user_input})
 
-                    # Update token statistics
-                    _update_token_stats(msg, stats)
+    # Get OpenAI tools
+    openai_tools = agent.tools.get_openai_tools()
+
+    # ReAct loop
+    for step_num in range(limit):
+        # Build request kwargs
+        request_kwargs: dict[str, Any] = {
+            "model": agent.llm_config.model,
+            "messages": agent.messages,
+            **agent.llm_config.api_params,
+        }
+
+        if openai_tools:
+            request_kwargs["tools"] = openai_tools
+            request_kwargs["tool_choice"] = "auto"
+
+        # Call API
+        response = agent.llm_config.client.chat.completions.create(**request_kwargs)
+
+        # Track tokens
+        if response.usage:
+            stats["token_consumption"]["input_tokens"] += response.usage.prompt_tokens
+            stats["token_consumption"]["output_tokens"] += (
+                response.usage.completion_tokens
+            )
+            stats["token_consumption"]["total_tokens"] += response.usage.total_tokens
+
+        if not response.choices:
+            break
+
+        assistant_message = response.choices[0].message
+
+        # Check for tool calls
+        if assistant_message.tool_calls:
+            # Append the assistant message (with tool_calls) to history
+            agent.messages.append(
+                {
+                    "role": "assistant",
+                    "content": assistant_message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in assistant_message.tool_calls
+                    ],
+                }
+            )
+
+            # Execute each tool call
+            for tc in assistant_message.tool_calls:
+                tool_name = tc.function.name
+                tool_args_str = tc.function.arguments
+
+                # Track tool usage
+                stats["tool_usage"][tool_name] = (
+                    stats["tool_usage"].get(tool_name, 0) + 1
+                )
+
+                # Parse arguments
+                try:
+                    tool_args = json.loads(tool_args_str)
+                except (json.JSONDecodeError, TypeError):
+                    # Feed error back to model
+                    tool_result = json.dumps(
+                        {"error": f"Invalid JSON arguments: {tool_args_str}"}
+                    )
+                    tool_args = {}
+                else:
+                    # Print progress before execution
+                    if not quiet:
+                        _print_tool_progress(tool_name, tool_args)
+
+                    # Execute tool
+                    tool = agent.tools.get(tool_name)
+                    if tool is not None:
+                        try:
+                            tool_result = tool.execute(**tool_args)
+                        except Exception as e:
+                            tool_result = json.dumps(
+                                {"error": f"Tool '{tool_name}' failed: {e}"}
+                            )
+                    else:
+                        tool_result = json.dumps(
+                            {"error": f"Unknown tool: {tool_name}"}
+                        )
+
+                # Append tool result to history
+                agent.messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": tool_result,
+                    }
+                )
+
+        else:
+            # No tool calls — final answer
+            agent.messages.append(
+                {
+                    "role": "assistant",
+                    "content": assistant_message.content or "",
+                }
+            )
+            break
 
     stats["execution_time_seconds"] = time.time() - start_time
 
-    return messages, stats
+    # Return only new messages from this call
+    new_messages = agent.messages[new_messages_start:]
+    return new_messages, stats
 
 
 def get_final_response(messages: List[Any]) -> Optional[str]:
     """Extract the final assistant response from agent messages.
 
     Args:
-        messages: List of messages from run_agent
+        messages: List of messages from run_agent (dicts)
 
     Returns:
-        The content of the last AI message, or None if not found
+        The content of the last assistant message without tool calls, or None
     """
     for msg in reversed(messages):
-        # Skip tool call messages
-        has_tool_calls = False
-        if hasattr(msg, "tool_calls") and msg.tool_calls:
-            has_tool_calls = True
-        elif hasattr(msg, "additional_kwargs") and msg.additional_kwargs.get(
-            "tool_calls"
-        ):
-            has_tool_calls = True
-        elif isinstance(msg, dict):
-            if msg.get("tool_calls") or msg.get("additional_kwargs", {}).get(
-                "tool_calls"
-            ):
-                has_tool_calls = True
-
-        if not has_tool_calls:
-            content = None
-            if hasattr(msg, "content") and msg.content:
-                if hasattr(msg, "type") and msg.type == "ai":
-                    content = msg.content
-                elif hasattr(msg, "role") and msg.role == "assistant":
-                    content = msg.content
-            elif isinstance(msg, dict):
-                if msg.get("content") and (
-                    msg.get("type") == "ai" or msg.get("role") == "assistant"
-                ):
-                    content = msg.get("content")
-
-            if content:
-                return content
+        # Handle dict messages (new format)
+        if isinstance(msg, dict):
+            if msg.get("tool_calls"):
+                continue
+            if msg.get("role") == "assistant" and msg.get("content"):
+                return msg["content"]
+        # Handle object messages (backward compat)
+        elif hasattr(msg, "role") and hasattr(msg, "content"):
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                continue
+            if msg.role == "assistant" and msg.content:
+                return msg.content
 
     return None
