@@ -43,7 +43,7 @@ def get_api_key() -> str:
     api_key = os.getenv("OPENROUTER_API_KEY")
 
     if not api_key:
-        print("Warning: No API key found. Set up with:", file=sys.stderr)
+        print("Error: No API key found. Set up with:", file=sys.stderr)
         print("  mkdir -p ~/.config/coder", file=sys.stderr)
         print(
             "  echo 'OPENROUTER_API_KEY=sk-or-...' > ~/.config/coder/.env",
@@ -62,6 +62,8 @@ def _load_json_file(path: Path, model: str) -> dict[str, Any]:
             config = json.load(f)
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON in model config '{model}': {e}") from e
+    except OSError as e:
+        raise FileNotFoundError(f"Cannot read model config '{model}': {e}") from e
 
     if "path" not in config:
         raise ValueError(f"Model config '{model}' missing required key: 'path'")
@@ -95,7 +97,7 @@ def load_model_config(model: str) -> dict[str, Any]:
         return _load_json_file(path, model)
 
     # Local override: ./{model}.json
-    local_path = Path(f"./{model}.json")
+    local_path = Path(f"{model}.json")
     if local_path.exists():
         return _load_json_file(local_path, model)
 
@@ -107,9 +109,8 @@ def load_model_config(model: str) -> dict[str, Any]:
 
     # List available models for error message
     available = list_available_models()
-    raise FileNotFoundError(
-        f"Model '{model}' not found. Available: {', '.join(available)}"
-    )
+    suffix = f" Available: {', '.join(available)}" if available else ""
+    raise FileNotFoundError(f"Model '{model}' not found.{suffix}")
 
 
 def list_available_models() -> list[str]:
@@ -146,10 +147,10 @@ def get_openrouter_llm(
     """
     # Load config from JSON
     config = load_model_config(model)
-    model_path = config["path"]
+    model_id = config["path"]
 
     if verbose:
-        print(f"Using model: {model_path}")
+        print(f"Using model: {model_id}")
         if os.getenv("CODER_VERBOSE"):
             for key, value in config.items():
                 if key != "path":
@@ -194,7 +195,10 @@ def get_openrouter_llm(
             if key in config:
                 api_params[key] = config[key]
         if "top_k" in config:
-            # OpenRouter supports top_k via extra_body
-            api_params["extra_body"] = {"top_k": config["top_k"]}
+            api_params.setdefault("extra_body", {})["top_k"] = config["top_k"]
 
-    return LLMConfig(client=client, model=model_path, api_params=api_params)
+    # Provider routing works for all models (including no_sampling_params)
+    if "provider" in config:
+        api_params.setdefault("extra_body", {})["provider"] = config["provider"]
+
+    return LLMConfig(client=client, model=model_id, api_params=api_params)

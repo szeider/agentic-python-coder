@@ -1,6 +1,6 @@
 [project]
 name = "agentic-python-coder"
-version = "3.0.0"
+version = "3.1.0"
 description = "A lightweight Python coding agent that writes, executes, and iterates on code through natural language instructions"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -19,11 +19,11 @@ classifiers = [
 ]
 keywords = ["ai", "coding", "agent", "llm", "code-generation", "automation"]
 dependencies = [
-    "openai>=2.16.0",
+    "openai>=2.21.0",
     "python-dotenv>=1.2.1",
-    "rich>=14.3.1",
+    "rich>=14.3.2",
     "jupyter-client>=8.8.0",
-    "ipykernel>=7.1.0",
+    "ipykernel>=7.2.0",
     "PyYAML>=6.0.3",
     "mcp>=1.26.0",
 ]
