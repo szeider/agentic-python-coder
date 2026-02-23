@@ -201,4 +201,8 @@ def get_openrouter_llm(
     if "provider" in config:
         api_params.setdefault("extra_body", {})["provider"] = config["provider"]
 
+    # Reasoning/thinking tokens (e.g. Gemini 3 Flash thinking levels)
+    if "reasoning" in config:
+        api_params.setdefault("extra_body", {})["reasoning"] = config["reasoning"]
+
     return LLMConfig(client=client, model=model_id, api_params=api_params)
