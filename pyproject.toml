@@ -60,6 +60,10 @@ exclude = [
     "*.jsonl",
     "*_code.py",
     "RELEASE_NOTES_*.md",
+    "CLAUDE.md",
+    "CLAUDE-archive.md",
+    "MEM/",
+    ".claude/",
 ]
 
 [tool.hatch.build.targets.wheel]
