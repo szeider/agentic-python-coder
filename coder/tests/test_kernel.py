@@ -191,3 +191,22 @@ class TestGlobalKernel:
         assert output["error"] is not None
         assert "NameError" in output["error"]
         shutdown_kernel()
+
+
+class TestDeadlineTimeout:
+    """Deadline overrun must report a timeout error, not silent success."""
+
+    def test_timeout_reports_error_and_interrupts(self, kernel):
+        output = kernel.execute("import time; time.sleep(30)", deadline_timeout=2)
+        assert output["error"] is not None
+        assert "timed out" in output["error"]
+
+        # The interrupt (plus grace period) must leave the kernel usable
+        output2 = kernel.execute("21 * 2")
+        assert output2["error"] is None
+        assert output2["result"] == "42"
+
+    def test_fast_code_unaffected_by_deadline(self, kernel):
+        output = kernel.execute("1 + 1", deadline_timeout=30)
+        assert output["error"] is None
+        assert output["result"] == "2"
