@@ -1,6 +1,11 @@
 """Python Coding Agent - A minimal coding assistant using direct OpenAI API and OpenRouter."""
 
-__version__ = "3.0.0"
+from importlib.metadata import PackageNotFoundError, version as _package_version
+
+try:
+    __version__ = _package_version("agentic-python-coder")
+except PackageNotFoundError:  # running from source without installation
+    __version__ = "0.0.0+unknown"
 
 # High-level API (recommended for most users)
 from agentic_python_coder.runner import solve_task

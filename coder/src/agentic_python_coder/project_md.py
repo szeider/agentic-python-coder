@@ -53,8 +53,12 @@ def check_packages_available(packages: List[str]) -> List[str]:
     unavailable = []
 
     for package in packages:
-        # Try to find the package
-        spec = importlib.util.find_spec(package)
+        # Try to find the package; find_spec raises for dotted names with a
+        # missing parent or otherwise invalid names — treat those as unavailable
+        try:
+            spec = importlib.util.find_spec(package)
+        except (ImportError, ValueError):
+            spec = None
         if spec is None:
             unavailable.append(package)
 

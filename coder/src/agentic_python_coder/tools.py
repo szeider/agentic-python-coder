@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Dict, Any, Callable
 
-from .kernel import get_kernel, format_output
+from .kernel import get_kernel, format_output, shutdown_kernel
 
 
 @dataclass
@@ -49,10 +49,6 @@ class ToolRegistry:
     def get(self, name: str) -> Tool | None:
         """Get a tool by name."""
         return self._tools.get(name)
-
-    def has(self, name: str) -> bool:
-        """Check if a tool is registered."""
-        return name in self._tools
 
     def get_openai_tools(self) -> list[dict[str, Any]]:
         """Get all tools in OpenAI format."""
@@ -171,7 +167,14 @@ def python_exec(code: str) -> str:
     with_packages = None
     if "CODER_WITH_PACKAGES" in os.environ:
         packages_str = os.environ["CODER_WITH_PACKAGES"]
-        with_packages = packages_str.split(",") if packages_str else []
+        if not packages_str:
+            with_packages = []
+        else:
+            try:
+                with_packages = json.loads(packages_str)
+            except json.JSONDecodeError:
+                # Legacy comma-joined format
+                with_packages = packages_str.split(",")
 
     try:
         kernel = get_kernel(cwd=str(working_dir.get()), with_packages=with_packages)
@@ -223,10 +226,16 @@ def save_code(code: str) -> str:
 
 
 def reset_global_state():
-    """Reset all global state to avoid accumulation across runs."""
+    """Reset all global state to avoid accumulation across runs.
+
+    Also shuts down the default kernel so the next execution starts a fresh
+    one — otherwise a second agent in the same process would silently reuse
+    the previous agent's kernel (its cwd, packages, and variables).
+    """
     global _todos, _task_basename
     _todos = []
     _task_basename = None
+    shutdown_kernel()
 
 
 # Tool definitions with explicit JSON schemas

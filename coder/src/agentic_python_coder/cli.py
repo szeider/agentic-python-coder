@@ -260,6 +260,9 @@ def validate_model(model):
             print(f"  - {m}")
         print("\nOr provide a path to a custom model JSON file.")
         sys.exit(1)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
 
 def load_project_prompt(project_path: str) -> Optional[str]:
@@ -290,12 +293,19 @@ def load_project_prompt(project_path: str) -> Optional[str]:
 
 
 def run_interactive(
-    working_dir: Path, model: str, project_prompt: str, api_key: str, todo: bool
+    working_dir: Path,
+    model: str,
+    project_prompt: str,
+    api_key: str,
+    todo: bool,
+    with_packages=None,
 ):
     """Run the agent in interactive mode."""
     print(f"\nInteractive mode - working in: {working_dir}")
     if project_prompt:
         print("Project configuration loaded")
+    if with_packages:
+        print(f"Dynamic packages: {', '.join(with_packages)}")
     print("Type 'exit' or 'quit' to stop.\n")
 
     # Load system prompt
@@ -307,12 +317,12 @@ def run_interactive(
         system_prompt=system_prompt,
         model=model,
         project_prompt=project_prompt,
+        with_packages=with_packages,
         api_key=api_key,
         todo=todo,
         verbose=True,
     )
 
-    thread_id = "interactive"
     all_messages = []
     cumulative_stats = {
         "tool_usage": {},
@@ -333,7 +343,7 @@ def run_interactive(
                     continue
 
                 print("\nAgent working...\n")
-                messages, stats = run_agent(agent, user_input, thread_id, quiet=False)
+                messages, stats = run_agent(agent, user_input, quiet=False)
                 all_messages.extend(messages)
 
                 # Update cumulative stats
@@ -440,7 +450,12 @@ def main():
     try:
         if args.interactive:
             run_interactive(
-                working_dir, args.model, project_prompt, args.api_key, args.todo
+                working_dir,
+                args.model,
+                project_prompt,
+                args.api_key,
+                args.todo,
+                with_packages=args.with_packages,
             )
         else:
             # Use solve_task for the main flow

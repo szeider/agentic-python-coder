@@ -234,7 +234,9 @@ def save_conversation_log(
             json.dumps(
                 {
                     "event": "complete",
-                    "status": "success",
+                    "status": "step_limit_reached"
+                    if stats and stats.get("step_limit_reached")
+                    else "success",
                 }
             )
             + "\n"

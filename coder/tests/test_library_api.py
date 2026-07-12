@@ -24,7 +24,9 @@ def test_imports_from_package():
         create_tool_registry,
     )
 
-    assert __version__ == "3.0.0"
+    from importlib.metadata import version
+
+    assert __version__ == version("agentic-python-coder")
     assert callable(solve_task)
     assert callable(create_coding_agent)
     assert callable(run_agent)
@@ -42,12 +44,18 @@ def test_model_registry():
     models = list_available_models()
     expected_models = [
         "sonnet45",
+        "sonnet46",
+        "sonnet5",
         "opus45",
+        "opus48",
         "deepseek31",
         "grok41",
         "qwen3",
         "gemini25",
+        "gemini31",
         "gpt52",
+        "gpt56sol",
+        "gpt56terra",
     ]
     for model in expected_models:
         assert model in models, f"Missing model: {model}"

@@ -80,8 +80,9 @@ def create_coding_agent(
         set_task_basename(task_basename)
 
     # Store packages for kernel initialization (clear if None to avoid state leaks)
+    # JSON-encoded: a comma join would corrupt specs like "pkg[extra1,extra2]"
     if with_packages is not None:
-        os.environ["CODER_WITH_PACKAGES"] = ",".join(with_packages)
+        os.environ["CODER_WITH_PACKAGES"] = json.dumps(with_packages)
     else:
         os.environ.pop("CODER_WITH_PACKAGES", None)
 
@@ -203,8 +204,9 @@ def run_agent(
     Returns:
         Tuple of (List of new messages from this call, Statistics dictionary)
     """
-    # Set working directory at execution time (not creation time)
-    # This prevents race conditions when multiple agents are created
+    # The working directory is a process-wide singleton; set it at execution
+    # time so it always matches the agent currently running (concurrent
+    # run_agent calls in one process are not supported)
     working_dir.set(agent.working_directory)
 
     limit = step_limit if step_limit is not None else DEFAULT_STEP_LIMIT
@@ -232,7 +234,7 @@ def run_agent(
     openai_tools = agent.tools.get_openai_tools()
 
     # ReAct loop
-    for step_num in range(limit):
+    for _ in range(limit):
         # Build request kwargs
         request_kwargs: dict[str, Any] = {
             "model": agent.llm_config.model,
@@ -247,13 +249,17 @@ def run_agent(
         # Call API
         response = agent.llm_config.client.chat.completions.create(**request_kwargs)
 
-        # Track tokens
+        # Track tokens (some providers return usage objects with None fields)
         if response.usage:
-            stats["token_consumption"]["input_tokens"] += response.usage.prompt_tokens
-            stats["token_consumption"]["output_tokens"] += (
-                response.usage.completion_tokens
+            stats["token_consumption"]["input_tokens"] += (
+                response.usage.prompt_tokens or 0
             )
-            stats["token_consumption"]["total_tokens"] += response.usage.total_tokens
+            stats["token_consumption"]["output_tokens"] += (
+                response.usage.completion_tokens or 0
+            )
+            stats["token_consumption"]["total_tokens"] += (
+                response.usage.total_tokens or 0
+            )
 
         if not response.choices:
             break
@@ -337,6 +343,11 @@ def run_agent(
                 }
             )
             break
+    else:
+        # Loop exhausted without a final answer
+        stats["step_limit_reached"] = True
+        if not quiet:
+            print(f"Warning: step limit ({limit}) reached without a final response")
 
     stats["execution_time_seconds"] = time.time() - start_time
 

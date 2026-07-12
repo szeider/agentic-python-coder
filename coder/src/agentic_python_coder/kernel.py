@@ -250,6 +250,7 @@ except ImportError:
 
         # Wait for and collect messages with hard deadline
         deadline = time.monotonic() + deadline_timeout
+        completed = False
 
         while time.monotonic() < deadline:
             try:
@@ -274,9 +275,25 @@ except ImportError:
                     if content.get("traceback"):
                         output["error"] += "\n" + "\n".join(content["traceback"])
                 elif msg_type == "status" and content["execution_state"] == "idle":
+                    completed = True
                     break  # Only exit on idle status
             except Empty:
                 continue  # Keep waiting, don't break
+
+        if not completed:
+            # Deadline hit while the kernel was still running: report a
+            # timeout instead of silently returning partial output as success,
+            # and interrupt so the kernel doesn't block the next execution
+            if output["error"] is None:
+                output["error"] = (
+                    f"Execution timed out after {deadline_timeout} seconds"
+                    " (partial output returned)"
+                )
+            try:
+                self.km.interrupt_kernel()
+                time.sleep(0.5)  # grace period so the next execute isn't aborted
+            except Exception:
+                pass  # Best effort
 
         return output
 

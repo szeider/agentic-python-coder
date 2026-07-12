@@ -39,16 +39,15 @@ _session_lock = asyncio.Lock()
 
 
 def truncate_output(result: dict) -> dict:
-    """Truncate stdout/stderr if too large and add success flag."""
+    """Truncate oversized text fields and add success flag."""
     # Add success flag based on error field
     result["success"] = result.get("error") is None
 
     max_kb = MAX_OUTPUT // 1024
-    for key in ["stdout", "stderr"]:
-        if key in result and result[key] and len(result[key]) > MAX_OUTPUT:
-            result[key] = (
-                result[key][:MAX_OUTPUT] + f"\n[{key} truncated at {max_kb}KB]"
-            )
+    for key in ["stdout", "stderr", "result", "error"]:
+        value = result.get(key)
+        if isinstance(value, str) and len(value) > MAX_OUTPUT:
+            result[key] = value[:MAX_OUTPUT] + f"\n[{key} truncated at {max_kb}KB]"
     return result
 
 
