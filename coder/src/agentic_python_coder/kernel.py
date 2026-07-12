@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import threading
 import time
 import uuid
@@ -311,7 +312,21 @@ except ImportError:
             return self._execute_raw(code, deadline_timeout)
 
     def shutdown(self):
-        """Shutdown the kernel and clean up."""
+        """Shutdown the kernel and clean up.
+
+        Kernels run in their own process group (jupyter_client launches with
+        start_new_session=True). After the regular shutdown, defensively kill
+        the whole group: uv-wrapped kernels are a tree (uv parent + python
+        child) and a surviving member would be orphaned.
+        """
+        # Capture the kernel's process group before shutdown clears it
+        pgid = None
+        try:
+            if hasattr(self, "km") and self.km:
+                pgid = getattr(getattr(self.km, "provisioner", None), "pgid", None)
+        except Exception:
+            pass
+
         try:
             if hasattr(self, "kc") and self.kc:
                 try:
@@ -329,6 +344,15 @@ except ImportError:
         except Exception:
             # Ignore errors during shutdown
             pass
+
+        # Defensive: ensure no process-tree member survived. Never signal our
+        # own group (pgid could be bogus if start_new_session did not apply).
+        if pgid and pgid > 0:
+            try:
+                if pgid != os.getpgid(0):
+                    os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
 
 
 # =============================================================================

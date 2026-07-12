@@ -7,6 +7,9 @@ import ast
 import asyncio
 import json
 import logging
+import os
+import signal
+import threading
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -20,6 +23,7 @@ from agentic_python_coder.kernel import (
     kernel_exists,
     list_kernels,
     restart_kernel,
+    shutdown_all_kernels,
 )
 
 # Configure logging
@@ -241,6 +245,30 @@ No side effects - safe to call anytime.""",
             },
         ),
         Tool(
+            name="submit_code",
+            description="""Submit your final, verified, self-contained Python program.
+
+Call this ONCE at the end of a solve, only after you have executed the program
+via python_exec and your verification passed. The submission must be a
+standalone program: all imports included, no reliance on session state.
+
+The code is syntax-checked with compile():
+- {"ok": true} if it parses
+- {"ok": false, "error": "<detail>"} on a syntax error — fix and resubmit
+
+The code is NOT executed and NOT written to disk; the client persists it.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "Complete standalone Python program (final answer).",
+                    },
+                },
+                "required": ["code"],
+            },
+        ),
+        Tool(
             name="python_interrupt",
             description="""Interrupt running code in the session.
 
@@ -391,6 +419,21 @@ versions
         result = await execute_with_timeout(code, timeout, kernel_id)
         return [TextContent(type="text", text=json.dumps(result))]
 
+    elif name == "submit_code":
+        code = arguments.get("code", "")
+        if not code.strip():
+            payload = {"ok": False, "error": "Empty submission"}
+        else:
+            try:
+                compile(code, "<submission>", "exec")
+                payload = {"ok": True}
+            except SyntaxError as e:
+                payload = {
+                    "ok": False,
+                    "error": f"Syntax error at line {e.lineno}: {e.msg}",
+                }
+        return [TextContent(type="text", text=json.dumps(payload))]
+
     elif name == "python_status":
         kernel_id = get_kernel_id(arguments)
         is_active = kernel_exists(kernel_id)
@@ -521,9 +564,39 @@ async def run_server():
         await server.run(read, write, server.create_initialization_options())
 
 
+# Hard-exit fallback if kernel cleanup hangs after a termination signal
+_TERMINATION_CLEANUP_TIMEOUT = 10.0
+
+
+def _handle_termination(signum, frame):
+    """Shut down all kernels on SIGTERM/SIGINT, then exit.
+
+    The cleanup runs in a thread (not in signal-handler context) so it can
+    safely take the kernel-registry locks; a timer hard-exits if it hangs.
+    """
+
+    def _cleanup_and_exit():
+        try:
+            shutdown_all_kernels()
+        finally:
+            os._exit(128 + signum)
+
+    threading.Timer(
+        _TERMINATION_CLEANUP_TIMEOUT, lambda: os._exit(128 + signum)
+    ).start()
+    threading.Thread(target=_cleanup_and_exit, daemon=True).start()
+
+
 def main():
     """Entry point for coder-mcp command."""
-    asyncio.run(run_server())
+    signal.signal(signal.SIGTERM, _handle_termination)
+    signal.signal(signal.SIGINT, _handle_termination)
+    try:
+        asyncio.run(run_server())
+    finally:
+        # stdin EOF / transport close / normal exit: deterministic cleanup
+        # (atexit also runs this, but only on clean interpreter shutdown)
+        shutdown_all_kernels()
 
 
 if __name__ == "__main__":

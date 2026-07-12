@@ -30,14 +30,15 @@ class TestListTools:
 
     @pytest.mark.asyncio
     async def test_lists_all_tools(self):
-        """All four tools are listed."""
+        """All five tools are listed."""
         tools = await list_tools()
         names = [t.name for t in tools]
         assert "python_exec" in names
         assert "python_reset" in names
         assert "python_status" in names
         assert "python_interrupt" in names
-        assert len(names) == 4
+        assert "submit_code" in names
+        assert len(names) == 5
 
     @pytest.mark.asyncio
     async def test_python_exec_schema(self):
@@ -288,6 +289,27 @@ class TestTruncateOutput:
         result = {"stdout": "hello", "stderr": "", "success": True}
         truncated = truncate_output(result)
         assert truncated["stdout"] == "hello"
+
+    def test_truncate_error_field(self):
+        """Huge tracebacks in the error field are capped too."""
+        result = {"stdout": "", "stderr": "", "error": "t" * 200000}
+        truncated = truncate_output(result)
+        assert len(truncated["error"]) <= MAX_OUTPUT + 100
+        assert "truncated" in truncated["error"]
+        assert truncated["success"] is False
+
+    def test_truncate_result_field(self):
+        """Huge repr in the result field is capped too."""
+        result = {"stdout": "", "stderr": "", "result": "r" * 200000, "error": None}
+        truncated = truncate_output(result)
+        assert len(truncated["result"]) <= MAX_OUTPUT + 100
+        assert truncated["success"] is True
+
+    def test_none_result_untouched(self):
+        """Non-string fields (result=None) must not break truncation."""
+        result = {"stdout": "", "stderr": "", "result": None, "error": None}
+        truncated = truncate_output(result)
+        assert truncated["result"] is None
 
     @pytest.mark.asyncio
     async def test_large_output_truncated(self):
