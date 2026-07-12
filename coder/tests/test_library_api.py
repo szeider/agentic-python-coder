@@ -155,6 +155,80 @@ def test_model_json_base_url_and_api_key_env(tmp_path, monkeypatch):
     assert "HTTP-Referer" not in llm_config.client.default_headers
 
 
+def test_save_code_rejects_syntax_errors(tmp_path):
+    """save_code must not write non-compiling code; it returns an error instead."""
+    import json
+    import agentic_python_coder.tools as tools_mod
+    from agentic_python_coder.tools import save_code, working_dir
+
+    tools_mod._task_basename = None
+    working_dir.set(str(tmp_path))
+
+    result = json.loads(save_code("def broken(:\n    pass"))
+    assert result["success"] is False
+    assert "syntax error" in result["error"].lower()
+    assert not (tmp_path / "solution.py").exists()
+
+    result_ok = json.loads(save_code("print('hi')"))
+    assert result_ok["success"] is True
+    assert (tmp_path / "solution.py").exists()
+
+
+def test_run_agent_recovers_from_length_truncation(tmp_path):
+    """A finish_reason == 'length' response must not be taken as final answer."""
+    from agentic_python_coder import (
+        CodingAgent,
+        LLMConfig,
+        create_tool_registry,
+        run_agent,
+        get_final_response,
+    )
+
+    class FakeMessage:
+        def __init__(self, content):
+            self.content = content
+            self.tool_calls = None
+
+    class FakeChoice:
+        def __init__(self, content, finish_reason):
+            self.message = FakeMessage(content)
+            self.finish_reason = finish_reason
+
+    class FakeResponse:
+        def __init__(self, choice):
+            self.choices = [choice]
+            self.usage = None
+
+    class FakeCompletions:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return FakeResponse(FakeChoice("partial answ", "length"))
+            return FakeResponse(FakeChoice("full answer", "stop"))
+
+    class FakeChat:
+        def __init__(self):
+            self.completions = FakeCompletions()
+
+    class FakeClient:
+        def __init__(self):
+            self.chat = FakeChat()
+
+    agent = CodingAgent(
+        llm_config=LLMConfig(client=FakeClient(), model="fake", api_params={}),
+        tools=create_tool_registry(),
+        system_prompt="test",
+        working_directory=str(tmp_path),
+    )
+
+    messages, stats = run_agent(agent, "hello", quiet=True)
+    assert get_final_response(messages) == "full answer"
+    assert agent.llm_config.client.chat.completions.calls == 2
+
+
 def test_get_final_response():
     """Test get_final_response helper function."""
     from agentic_python_coder import get_final_response

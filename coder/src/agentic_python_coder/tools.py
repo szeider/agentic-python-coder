@@ -217,6 +217,16 @@ def save_code(code: str) -> str:
         else:
             filename = "solution.py"
 
+        # Reject non-compiling code so the model gets feedback instead of a
+        # silently broken file (e.g. from a bad escape in the tool-call JSON)
+        try:
+            compile(code, filename, "exec")
+        except SyntaxError as e:
+            return error_response(
+                f"Code NOT saved — syntax error at line {e.lineno}: {e.msg}. "
+                "Fix the code and call save_code again."
+            )
+
         output_path = working_dir.get() / filename
         output_path.write_text(code)
 
@@ -290,6 +300,8 @@ SAVE_CODE_TOOL = Tool(
         "2. Verified the output format matches the specification exactly (JSON keys, array shapes, value ranges)\n"
         "3. For constraint/logic problems: run an independent verification checking every constraint\n"
         "Do NOT save unverified code. If verification fails, fix the code and re-verify first.\n\n"
+        "The code is syntax-checked before saving; on a syntax error nothing is\n"
+        "written and an error is returned — fix the code and save again.\n\n"
         "Args:\n"
         "    code: The complete Python code\n\n"
         "Returns:\n"

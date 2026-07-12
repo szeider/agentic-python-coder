@@ -29,9 +29,10 @@ Before completing your solution, verify:
 ☐ 2. **Model solves correctly** - At least one answer set is found (or UNSAT handled)
 ☐ 3. **Optimization applied** - If problem asks for optimal, use #minimize/#maximize
 ☐ 4. **Solution extracted** - Answer set atoms properly extracted and formatted
+☐ 4b. **No Model escapes on_model** - All solution data extracted to plain Python objects inside the callback (touching a Model after solve() returns segfaults)
 ☐ 5. **Output format correct** - JSON output with appropriate structure
 ☐ 6. **Predicates meaningful** - Clear names that reflect the problem domain
-☐ 7. **Constraints verified** - All problem constraints are encoded
+☐ 7. **Constraints verified independently** - All problem constraints are encoded AND re-checked by a plain-Python verify() whose expectations are re-derived from the problem text, not from your encoding's own interpretation
 ☐ 8. **File written** - Create `solution.py` with complete working code
 
 ## Section 2: Critical Rules of Engagement
@@ -473,6 +474,38 @@ def extract_solution(model):
             solution[worker].append(task)
     return solution
 ```
+
+### CRITICAL: The Model Object Is Only Valid Inside on_model (Segfault Risk)
+
+The `clingo.Model` object passed to your `on_model` callback is only valid DURING
+that callback. After `ctl.solve()` returns, clingo frees the underlying model —
+touching it later is a use-after-free that crashes the Python process with a
+segmentation fault (exit code 139) and NO Python traceback.
+
+Extract everything you need into plain Python objects (ints, strings, lists, dicts)
+INSIDE the callback. Never store the Model object itself for later use.
+
+```python
+# WRONG - segfaults after solve() returns:
+saved = None
+def on_model(m):
+    global saved
+    saved = m                        # Model outlives the callback
+ctl.solve(on_model=on_model)
+atoms = saved.symbols(atoms=True)    # use-after-free -> SIGSEGV, no traceback
+
+# CORRECT - extract inside the callback:
+result = []
+def on_model(m):
+    for a in m.symbols(atoms=True):
+        if a.match("assigned", 2):
+            result.append((str(a.arguments[0]), str(a.arguments[1])))
+ctl.solve(on_model=on_model)
+# work with the plain tuples in result
+```
+
+This also applies to verification: snapshot the atoms into plain Python inside
+`on_model`, then run your checks on the snapshot after solving.
 
 ## Section 4: Problem-Solving Pattern Library
 
@@ -963,6 +996,36 @@ possible_col(C) :- col(C).
 3. **Separate by sameness**: Only runs of identical color/state need gaps
 4. **Let solver determine gaps**: Don't over-constrain non-run cells
 5. **Different is adjacent**: Cells of different colors/states CAN touch
+
+### 4.11 "Reachable Only After" / Ordered Reachability Constraints
+
+When a problem requires that some target element become reachable only after all
+other elements (or only after specific ones) under an evolving reachability process,
+do NOT model it as an existential ordering — guessing a permutation with the target
+pinned last only proves that SOME order exists, which is weaker than what such
+problems ask. The intended reading is almost always about the actual reachability
+process: everything reachable gets reached as soon as it is reachable.
+
+Model the process directly with a time-indexed fixpoint and constrain first-reach
+times:
+
+```asp
+step(0..max_step).
+reached(S, 0) :- start(S).
+reached(Y, T+1) :- edge(X, Y), reached(X, T), step(T+1), unlocked(X, Y, T).
+reached(X, T+1) :- reached(X, T), step(T+1).                    % persistence
+first_reached(X, 0) :- reached(X, 0).
+first_reached(X, T) :- reached(X, T), not reached(X, T-1), T > 0, step(T).
+
+% target must not become reachable before (or together with) any other element:
+:- first_reached(target, Tg), first_reached(X, Tx), X != target, Tx >= Tg.
+```
+
+Adapt `unlocked/3` to whatever gates progression (collected items, satisfied
+prerequisites, ...). Verify with a plain-Python simulation of the same process:
+repeatedly add everything currently reachable, one step at a time, and check the
+required ordering of first-reach steps against the problem text — do not reuse
+your encoding's ordering predicates in the verifier.
 
 ## Section 5: Debugging & Advanced Techniques
 

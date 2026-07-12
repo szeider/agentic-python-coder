@@ -334,6 +334,29 @@ def run_agent(
                     }
                 )
 
+        elif response.choices[0].finish_reason == "length":
+            # Response cut off at max_tokens with no tool call — don't accept
+            # the truncated text as a final answer; ask the model to continue
+            agent.messages.append(
+                {
+                    "role": "assistant",
+                    "content": assistant_message.content or "",
+                }
+            )
+            agent.messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Your previous response was truncated at the max_tokens "
+                        "limit. Continue, and be more concise."
+                    ),
+                }
+            )
+            if not quiet:
+                print(
+                    "Warning: response truncated at max_tokens; asking model to continue"
+                )
+
         else:
             # No tool calls — final answer
             agent.messages.append(
