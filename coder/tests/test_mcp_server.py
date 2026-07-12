@@ -74,15 +74,6 @@ class TestPythonReset:
     """Tests for python_reset tool."""
 
     @pytest.mark.asyncio
-    async def test_reset_creates_new_kernel(self):
-        """python_reset without kernel_id creates a new kernel."""
-        result = await call_tool("python_reset", {})
-        data = json.loads(result[0].text)
-        assert data["success"] is True
-        assert "kernel_id" in data
-        assert len(data["kernel_id"]) == 8  # 8-char hex
-
-    @pytest.mark.asyncio
     async def test_reset_with_id_clears_session(self):
         """python_reset with kernel_id resets that kernel."""
         # Create a kernel

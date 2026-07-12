@@ -21,6 +21,7 @@ from agentic_python_coder.kernel import (
     execute_in_kernel,
     interrupt_kernel_by_id,
     kernel_exists,
+    kill_all_kernel_process_groups,
     list_kernels,
     restart_kernel,
     shutdown_all_kernels,
@@ -36,6 +37,7 @@ server = Server("ipython_mcp")
 MAX_OUTPUT = 100 * 1024  # 100KB truncation limit
 MAX_TIMEOUT = 300  # Maximum allowed timeout in seconds
 DEFAULT_TIMEOUT = 30  # Default timeout in seconds
+STATUS_PROBE_TIMEOUT = 10  # Timeout for python_status introspection probes
 KERNEL_TIMEOUT_BUFFER = 5  # Extra seconds for kernel deadline vs asyncio timeout
 
 # Async lock for session operations (default kernel management)
@@ -346,7 +348,9 @@ versions
                     % packages
                 )
                 try:
-                    result = await execute_with_timeout(version_code, 30, kernel_id)
+                    result = await execute_with_timeout(
+                        version_code, DEFAULT_TIMEOUT, kernel_id
+                    )
                     if result.get("result"):
                         versions = ast.literal_eval(result["result"])
                         if isinstance(versions, dict):
@@ -430,8 +434,11 @@ versions
             except SyntaxError as e:
                 payload = {
                     "ok": False,
-                    "error": f"Syntax error at line {e.lineno}: {e.msg}",
+                    "error": f"Syntax error at line {e.lineno or '?'}: {e.msg}",
                 }
+            except ValueError as e:
+                # compile() raises ValueError e.g. for null bytes in source
+                payload = {"ok": False, "error": f"Invalid source: {e}"}
         return [TextContent(type="text", text=json.dumps(payload))]
 
     elif name == "python_status":
@@ -455,7 +462,7 @@ versions
             # Get Python version
             try:
                 result = await execute_with_timeout(
-                    "import sys; sys.version", 10, kernel_id
+                    "import sys; sys.version", STATUS_PROBE_TIMEOUT, kernel_id
                 )
                 if result.get("result"):
                     status["python_version"] = result["result"].strip("'\"")
@@ -469,7 +476,9 @@ import importlib.metadata
 [f"{d.metadata['Name']} {d.version}" for d in importlib.metadata.distributions()
  if d.metadata['Name'] not in ('pip', 'setuptools', 'wheel', 'ipykernel', 'jupyter-client')][:20]
 """
-                result = await execute_with_timeout(pkg_code, 10, kernel_id)
+                result = await execute_with_timeout(
+                    pkg_code, STATUS_PROBE_TIMEOUT, kernel_id
+                )
                 if result.get("result"):
                     status["packages"] = ast.literal_eval(result["result"])
             except Exception:
@@ -481,7 +490,9 @@ import importlib.metadata
 [name for name in dir() if not name.startswith('_')
  and name not in ('In', 'Out', 'get_ipython', 'exit', 'quit', 'open')]
 """
-                result = await execute_with_timeout(var_code, 10, kernel_id)
+                result = await execute_with_timeout(
+                    var_code, STATUS_PROBE_TIMEOUT, kernel_id
+                )
                 if result.get("result"):
                     status["variables"] = ast.literal_eval(result["result"])
             except Exception:
@@ -567,16 +578,25 @@ async def run_server():
 # Hard-exit fallback if kernel cleanup hangs after a termination signal
 _TERMINATION_CLEANUP_TIMEOUT = 10.0
 
+# Set on the first termination signal; later signals are ignored instead of
+# stacking additional timers and cleanup threads
+_terminating = threading.Event()
+
 
 def _handle_termination(signum, frame):
     """Shut down all kernels on SIGTERM/SIGINT, then exit.
 
-    The cleanup runs in a thread (not in signal-handler context) so it can
-    safely take the kernel-registry locks; a timer hard-exits if it hangs.
+    Kernel process groups are hard-killed first (lock-free, cannot block on
+    a busy kernel's exec lock); the graceful registry cleanup then runs in a
+    thread, with a timer that hard-exits if it hangs.
     """
+    if _terminating.is_set():
+        return
+    _terminating.set()
 
     def _cleanup_and_exit():
         try:
+            kill_all_kernel_process_groups()
             shutdown_all_kernels()
         finally:
             os._exit(128 + signum)
@@ -594,8 +614,11 @@ def main():
     try:
         asyncio.run(run_server())
     finally:
-        # stdin EOF / transport close / normal exit: deterministic cleanup
-        # (atexit also runs this, but only on clean interpreter shutdown)
+        # stdin EOF / transport close / normal exit: the client is gone, so
+        # hard-kill kernel groups first (immune to a busy kernel's exec
+        # lock), then clean up the registry (atexit also runs the graceful
+        # path, but only on clean interpreter shutdown)
+        kill_all_kernel_process_groups()
         shutdown_all_kernels()
 
 

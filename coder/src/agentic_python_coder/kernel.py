@@ -220,13 +220,13 @@ except ImportError:
         self._execute_raw(startup_code)
 
     def _cleanup_on_error(self):
-        """Clean up resources if initialization fails."""
+        """Clean up resources if initialization fails.
+
+        Routes through shutdown() so a partially-started kernel tree gets
+        the same defensive process-group kill as a healthy one.
+        """
         try:
-            if hasattr(self, "kc") and self.kc:
-                self.kc.stop_channels()
-            if hasattr(self, "km") and self.km:
-                if self.km.is_alive():
-                    self.km.shutdown_kernel(now=True)
+            self.shutdown()
         except Exception:
             pass  # Best effort cleanup
 
@@ -624,6 +624,33 @@ def shutdown_all_kernels():
         try:
             shutdown_kernel_by_id(kid)
         except Exception:
+            pass  # Best effort
+
+
+def kill_all_kernel_process_groups():
+    """Hard-kill (SIGKILL) every registered kernel's process group.
+
+    Deliberately lock-free: this is the termination path, where a busy
+    kernel's _exec_lock may be held indefinitely by an in-flight execution
+    and the graceful shutdown_all_kernels() would block behind it. Snapshot
+    the registry and signal each group directly. Never signals our own
+    process group. Kernels mid-creation (registry slot still None) cannot
+    be reached here — that sub-second window is a known limitation.
+    """
+    try:
+        own_pgid = os.getpgid(0)
+    except OSError:
+        own_pgid = None
+
+    for state in list(_kernels.values()):
+        if state is None:
+            continue
+        try:
+            km = state.kernel.km
+            pgid = getattr(getattr(km, "provisioner", None), "pgid", None)
+            if pgid and pgid > 0 and pgid != own_pgid:
+                os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError, AttributeError):
             pass  # Best effort
 
 

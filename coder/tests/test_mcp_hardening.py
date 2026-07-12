@@ -40,12 +40,23 @@ class TestSubmitCode:
 
     @pytest.mark.asyncio
     async def test_unterminated_string_rejected(self):
-        # The exact failure mode seen in the wild: bad JSON escape produced
-        # an unterminated string literal mid-file
-        code = "x = 1\nreturn '\n'.join(facts)\n"
+        # The exact failure mode seen in the wild: a bad JSON escape turned
+        # '\n'.join(...) into an unterminated string literal — here the
+        # unterminated literal is the ONLY syntax problem in the code
+        code = "facts = ['a', 'b']\ns = '\n'.join(facts)\nprint(s)\n"
         result = await call_tool("submit_code", {"code": code})
         data = json.loads(result[0].text)
         assert data["ok"] is False
+        assert "line 2" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_null_byte_rejected_cleanly(self):
+        # compile() raises ValueError (not SyntaxError) for null bytes; the
+        # handler must still return the documented envelope, not crash
+        result = await call_tool("submit_code", {"code": "print(1)\x00"})
+        data = json.loads(result[0].text)
+        assert data["ok"] is False
+        assert data["error"]
 
     @pytest.mark.asyncio
     async def test_empty_submission_rejected(self):
@@ -219,6 +230,39 @@ class TestNoOrphanedKernels:
 
         kernel_pids = _descendants(mcp_client.proc.pid)
         assert kernel_pids, "expected kernel processes to exist"
+
+        os.kill(mcp_client.proc.pid, signal.SIGTERM)
+        mcp_client.proc.wait(timeout=20)
+
+        survivors = _wait_until_dead(kernel_pids)
+        assert not survivors, f"orphaned kernel processes: {survivors}"
+
+    def test_sigterm_with_busy_kernel_kills_tree(self, mcp_client):
+        """SIGTERM while code is EXECUTING: the graceful path blocks on the
+        kernel's exec lock, so the lock-free hard-kill must save the day."""
+        mcp_client.initialize()
+        result = mcp_client.call_tool("python_exec", {"code": "1+1", "timeout": 60})
+        assert result["success"] is True
+
+        # Fire a long-running execution and do NOT wait for its response
+        mcp_client._send(
+            {
+                "jsonrpc": "2.0",
+                "id": 999,
+                "method": "tools/call",
+                "params": {
+                    "name": "python_exec",
+                    "arguments": {
+                        "code": "import time; time.sleep(120)",
+                        "timeout": 200,
+                    },
+                },
+            }
+        )
+        time.sleep(2)  # let the execution start and take the exec lock
+
+        kernel_pids = _descendants(mcp_client.proc.pid)
+        assert kernel_pids, "expected a kernel process to exist"
 
         os.kill(mcp_client.proc.pid, signal.SIGTERM)
         mcp_client.proc.wait(timeout=20)
