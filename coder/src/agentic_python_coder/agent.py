@@ -50,6 +50,7 @@ def create_coding_agent(
     api_key: Optional[str] = None,
     todo: bool = False,
     verbose: bool = False,
+    llm_config: Optional[LLMConfig] = None,
 ) -> CodingAgent:
     """Create a ReAct agent for Python coding tasks.
 
@@ -65,6 +66,8 @@ def create_coding_agent(
         api_key: Optional API key override
         todo: If True, includes todo_write tool for task tracking
         verbose: If True, print progress info (default False for library use)
+        llm_config: Optional pre-built LLMConfig (any OpenAI-compatible
+            client); takes precedence over model/api_key
 
     Returns:
         Configured CodingAgent
@@ -82,12 +85,13 @@ def create_coding_agent(
     else:
         os.environ.pop("CODER_WITH_PACKAGES", None)
 
-    # Get LLM config
-    llm_config = get_openrouter_llm(
-        model=model or DEFAULT_MODEL,
-        api_key=api_key,
-        verbose=verbose,
-    )
+    # Get LLM config (a pre-built one takes precedence)
+    if llm_config is None:
+        llm_config = get_openrouter_llm(
+            model=model or DEFAULT_MODEL,
+            api_key=api_key,
+            verbose=verbose,
+        )
 
     # Create tool registry
     tools = create_tool_registry(todo=todo)

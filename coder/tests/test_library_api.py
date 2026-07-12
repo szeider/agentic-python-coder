@@ -85,6 +85,68 @@ def test_create_agent_metadata():
         assert agent.llm_config is not None
 
 
+def test_create_agent_with_custom_llm_config():
+    """Test that a pre-built LLMConfig is used directly (no OpenRouter setup)."""
+    from openai import OpenAI
+    from agentic_python_coder import create_coding_agent, LLMConfig
+
+    custom_config = LLMConfig(
+        client=OpenAI(api_key="dummy", base_url="http://localhost:11434/v1"),
+        model="llama3",
+        api_params={"temperature": 0.5},
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        agent = create_coding_agent(
+            working_directory=tmpdir,
+            system_prompt="Test",
+            llm_config=custom_config,
+        )
+        assert agent.llm_config is custom_config
+        assert agent.llm_config.model == "llama3"
+
+
+def test_solve_task_accepts_llm_config():
+    """Test that solve_task exposes the llm_config parameter."""
+    import inspect
+    from agentic_python_coder import solve_task
+
+    sig = inspect.signature(solve_task)
+    assert "llm_config" in sig.parameters
+
+
+def test_model_json_base_url_and_api_key_env(tmp_path, monkeypatch):
+    """Test base_url and api_key_env keys in a custom model JSON."""
+    import json
+    import pytest
+    from agentic_python_coder import get_openrouter_llm
+
+    config_path = tmp_path / "custom.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "path": "my-org/my-model",
+                "base_url": "http://localhost:8000/v1",
+                "api_key_env": "MY_CUSTOM_KEY",
+                "temperature": 0.0,
+            }
+        )
+    )
+
+    # Missing env var raises
+    monkeypatch.delenv("MY_CUSTOM_KEY", raising=False)
+    with pytest.raises(ValueError, match="MY_CUSTOM_KEY"):
+        get_openrouter_llm(model=str(config_path))
+
+    # With env var set, client points at the custom endpoint
+    monkeypatch.setenv("MY_CUSTOM_KEY", "test-key")
+    llm_config = get_openrouter_llm(model=str(config_path))
+    assert str(llm_config.client.base_url).startswith("http://localhost:8000/v1")
+    assert llm_config.model == "my-org/my-model"
+    # OpenRouter attribution headers are skipped for custom endpoints
+    assert "HTTP-Referer" not in llm_config.client.default_headers
+
+
 def test_get_final_response():
     """Test get_final_response helper function."""
     from agentic_python_coder import get_final_response

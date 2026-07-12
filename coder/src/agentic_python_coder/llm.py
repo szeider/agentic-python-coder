@@ -133,6 +133,10 @@ def get_openrouter_llm(
 ) -> LLMConfig:
     """Create a fully configured LLMConfig for OpenRouter.
 
+    The model JSON may override the endpoint with "base_url" (any
+    OpenAI-compatible server) and "api_key_env" (name of the environment
+    variable holding the key for that endpoint).
+
     Args:
         model: Model name (e.g., "sonnet45") or path to JSON file
         api_key: Optional API key
@@ -158,17 +162,27 @@ def get_openrouter_llm(
 
     # Get API key
     if not api_key:
-        api_key = get_api_key()
+        if "api_key_env" in config:
+            api_key = os.getenv(config["api_key_env"])
+            if not api_key:
+                raise ValueError(
+                    f"Environment variable '{config['api_key_env']}' not set "
+                    f"(required by model config '{model}')"
+                )
+        else:
+            api_key = get_api_key()
 
     # Build client kwargs
     client_kwargs: dict[str, Any] = {
         "api_key": api_key,
-        "base_url": "https://openrouter.ai/api/v1",
-        "default_headers": {
+        "base_url": config.get("base_url", "https://openrouter.ai/api/v1"),
+    }
+    if "base_url" not in config:
+        # OpenRouter attribution headers; skip for custom endpoints
+        client_kwargs["default_headers"] = {
             "HTTP-Referer": "https://github.com/szeider/agentic-python-coder",
             "X-Title": "Agentic Python Coder",
-        },
-    }
+        }
 
     # Add request_timeout as client timeout
     if "request_timeout" in config:

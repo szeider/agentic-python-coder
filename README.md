@@ -127,6 +127,22 @@ coder --model gpt52 "task"         # GPT-5.2
 coder --model ./mymodel.json "task"
 ```
 
+A custom model JSON can also point at any OpenAI-compatible endpoint
+(OpenAI directly, a local Ollama/vLLM server, etc.) instead of OpenRouter:
+
+```json
+{
+  "path": "gpt-4o-mini",
+  "base_url": "https://api.openai.com/v1",
+  "api_key_env": "OPENAI_API_KEY",
+  "temperature": 0.0
+}
+```
+
+`base_url` overrides the OpenRouter endpoint; `api_key_env` names the
+environment variable holding the key for that endpoint (default:
+`OPENROUTER_API_KEY`).
+
 ### Project Templates
 
 Domain-specific templates improve results. Bundled examples are available on GitHub at [`coder/src/agentic_python_coder/examples/`](coder/src/agentic_python_coder/examples/). Use `--init` to copy them locally:
@@ -192,6 +208,7 @@ messages, stats, log_path = solve_task(
     save_log=True,                   # Save conversation log
     task_basename=None,              # Base name for output files
     step_limit=None,                 # Max agent steps (default: 200)
+    llm_config=None,                 # Pre-built LLMConfig (overrides model/api_key)
 )
 ```
 
@@ -218,6 +235,25 @@ messages, stats = run_agent(agent, "Load data.csv", quiet=True)
 messages2, stats2 = run_agent(agent, "Now plot column A", quiet=True)
 
 print(get_final_response(messages2))
+```
+
+Instead of a model name, you can pass a pre-built `LLMConfig` wrapping any
+OpenAI-compatible client:
+
+```python
+from openai import OpenAI
+from agentic_python_coder import LLMConfig, create_coding_agent
+
+llm_config = LLMConfig(
+    client=OpenAI(api_key="...", base_url="https://api.openai.com/v1"),
+    model="gpt-4o-mini",
+    api_params={"temperature": 0.0},
+)
+
+agent = create_coding_agent(
+    working_directory="/tmp/workspace",
+    llm_config=llm_config,
+)
 ```
 
 #### `get_openrouter_llm()` — LLM Access

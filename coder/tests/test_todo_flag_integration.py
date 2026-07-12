@@ -8,8 +8,6 @@ import subprocess
 import tempfile
 import os
 import sys
-import json
-from pathlib import Path
 
 def run_coder_command(args, timeout=30):
     """Helper to run coder command and capture output."""
@@ -46,7 +44,11 @@ def test_todo_flag_creates_correct_prompt():
             )
             output = result.stdout + result.stderr
         except subprocess.TimeoutExpired as e:
-            output = (e.output or "") + (e.stderr or "")
+            # TimeoutExpired captures output as bytes even in text mode
+            def as_text(x):
+                return x.decode(errors="replace") if isinstance(x, bytes) else (x or "")
+
+            output = as_text(e.output) + as_text(e.stderr)
 
         # Even with invalid API key, we should see that it tried to load the right prompt
         assert "system_todo.md" in output or "Creating agent" in output, \

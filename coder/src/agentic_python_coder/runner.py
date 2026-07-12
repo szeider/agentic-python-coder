@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional, List, Any, Dict
 
 from agentic_python_coder.agent import create_coding_agent, run_agent
+from agentic_python_coder.llm import LLMConfig
 
 
 def get_system_prompt_path(todo: bool = False) -> Path:
@@ -256,6 +257,7 @@ def solve_task(
     save_log: bool = True,
     task_basename: Optional[str] = None,
     step_limit: Optional[int] = None,
+    llm_config: Optional[LLMConfig] = None,
 ) -> tuple[List[Any], Dict[str, Any], Optional[Path]]:
     """Run a complete coding task end-to-end.
 
@@ -275,6 +277,8 @@ def solve_task(
         save_log: Save conversation log to file (default: True)
         task_basename: Base name for output files
         step_limit: Maximum agent steps before stopping (default: 200)
+        llm_config: Optional pre-built LLMConfig (any OpenAI-compatible
+            client); takes precedence over model/api_key
 
     Returns:
         Tuple of (messages, stats, log_path)
@@ -313,6 +317,7 @@ def solve_task(
         api_key=api_key,
         todo=todo,
         verbose=not quiet,
+        llm_config=llm_config,
     )
 
     # Run agent
