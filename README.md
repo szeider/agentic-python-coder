@@ -114,14 +114,20 @@ coder -i
 ```bash
 # Built-in models (versioned names)
 coder --model sonnet45 "task"   # Claude Sonnet 4.5 (default)
+coder --model sonnet46 "task"   # Claude Sonnet 4.6
+coder --model sonnet5 "task"    # Claude Sonnet 5
 coder --model opus45 "task"     # Claude Opus 4.5
+coder --model opus48 "task"     # Claude Opus 4.8
 coder --model deepseek31 "task" # DeepSeek v3.1
 coder --model grok41 "task"     # X.AI Grok 4.1
 coder --model qwen3 "task"      # Qwen3 Coder
 coder --model gemini25 "task"     # Gemini Pro 2.5
 coder --model gemini3pro "task"    # Gemini 3 Pro Preview
+coder --model gemini31 "task"      # Gemini 3.1 Pro Preview
 coder --model gemini3flash "task"  # Gemini 3 Flash Preview (fast, low-cost)
 coder --model gpt52 "task"         # GPT-5.2
+coder --model gpt56sol "task"      # GPT-5.6 Sol
+coder --model gpt56terra "task"    # GPT-5.6 Terra
 
 # Custom model (JSON file)
 coder --model ./mymodel.json "task"
