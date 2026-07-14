@@ -9,6 +9,7 @@ import json
 
 import pytest
 
+from agentic_python_coder import agent as agent_module
 from agentic_python_coder.agent import CodingAgent, run_agent, get_final_response
 from agentic_python_coder.llm import LLMConfig
 from agentic_python_coder.runner import save_conversation_log
@@ -47,6 +48,29 @@ class FakeResponse:
     def __init__(self, message, finish_reason="stop"):
         self.choices = [FakeChoice(message, finish_reason)]
         self.usage = None
+
+
+class FakeErrorResponse:
+    """Mimics an OpenRouter 200-with-error body parsed by the OpenAI SDK."""
+
+    def __init__(self, error=None):
+        self.choices = None
+        self.usage = None
+        self.model_extra = {"error": error} if error else {}
+
+    def model_dump_json(self):
+        return json.dumps({"choices": None, "usage": None, **self.model_extra})
+
+
+class FakeErrorFinishResponse:
+    """Mimics a response whose choice carries finish_reason 'error'."""
+
+    def __init__(self, error=None):
+        choice = FakeChoice(FakeMessage(""), finish_reason="error")
+        choice.model_extra = {"error": error} if error else {}
+        self.choices = [choice]
+        self.usage = None
+        self.model_extra = {}
 
 
 class ScriptedClient:
@@ -196,6 +220,70 @@ class TestStepLimit:
         agent = make_agent(tmp_path, [FakeResponse(FakeMessage("done"))])
         _, stats = run_agent(agent, "go", quiet=True, step_limit=3)
         assert "step_limit_reached" not in stats
+
+
+class TestEmptyChoicesRetry:
+    def test_transient_error_body_is_retried(self, tmp_path, monkeypatch):
+        # Two error bodies, then a real answer: the loop must retry through
+        # them instead of treating the error as a normal completion
+        sleeps = []
+        monkeypatch.setattr(agent_module.time, "sleep", sleeps.append)
+        agent = make_agent(
+            tmp_path,
+            [
+                FakeErrorResponse({"message": "Internal Server Error", "code": 500}),
+                FakeErrorResponse({"message": "Internal Server Error", "code": 500}),
+                FakeResponse(FakeMessage("done")),
+            ],
+        )
+        messages, _ = run_agent(agent, "go", quiet=True)
+        assert get_final_response(messages) == "done"
+        assert agent.llm_config.client.calls == 3
+        assert sleeps == [5, 10]
+
+    def test_persistent_error_body_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(agent_module.time, "sleep", lambda s: None)
+        agent = make_agent(
+            tmp_path,
+            [FakeErrorResponse({"message": "Internal Server Error", "code": 500})],
+        )
+        with pytest.raises(RuntimeError, match="Internal Server Error"):
+            run_agent(agent, "go", quiet=True)
+        assert agent.llm_config.client.calls == 4  # 1 initial + 3 retries
+
+    def test_empty_choices_without_error_field_raises(self, tmp_path, monkeypatch):
+        # No error field in the body: still not a valid completion
+        monkeypatch.setattr(agent_module.time, "sleep", lambda s: None)
+        agent = make_agent(tmp_path, [FakeErrorResponse()])
+        with pytest.raises(RuntimeError, match="no choices"):
+            run_agent(agent, "go", quiet=True)
+
+    def test_error_finish_reason_is_retried(self, tmp_path, monkeypatch):
+        # A present choice with finish_reason "error" is an error envelope,
+        # not a final answer
+        sleeps = []
+        monkeypatch.setattr(agent_module.time, "sleep", sleeps.append)
+        agent = make_agent(
+            tmp_path,
+            [
+                FakeErrorFinishResponse({"message": "Provider error", "code": 502}),
+                FakeResponse(FakeMessage("done")),
+            ],
+        )
+        messages, _ = run_agent(agent, "go", quiet=True)
+        assert get_final_response(messages) == "done"
+        assert agent.llm_config.client.calls == 2
+        assert sleeps == [5]
+
+    def test_persistent_error_finish_reason_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(agent_module.time, "sleep", lambda s: None)
+        agent = make_agent(
+            tmp_path,
+            [FakeErrorFinishResponse({"message": "Provider error", "code": 502})],
+        )
+        with pytest.raises(RuntimeError, match="Provider error"):
+            run_agent(agent, "go", quiet=True)
+        assert agent.llm_config.client.calls == 4
 
 
 class TestConversationLogStatus:

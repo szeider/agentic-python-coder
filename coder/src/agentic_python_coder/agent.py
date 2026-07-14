@@ -19,6 +19,55 @@ from agentic_python_coder.tools import (
 # Default maximum number of steps the agent can take before stopping
 DEFAULT_STEP_LIMIT = 200
 
+# Retries for API error responses the OpenAI SDK parses without raising:
+# OpenRouter intermittently returns HTTP 200 whose body is an error object
+# ({"choices": null, "error": {...}}), or a choice with finish_reason "error"
+API_ERROR_MAX_RETRIES = 3
+API_ERROR_BACKOFF_SECONDS = 5
+
+
+def _response_error(response) -> Optional[str]:
+    """Return a description if the response is an error envelope, else None."""
+    if not response.choices:
+        error = (getattr(response, "model_extra", None) or {}).get("error")
+        if error:
+            return f"no choices, error: {error}"
+        dump = getattr(response, "model_dump_json", None)
+        body = dump() if callable(dump) else repr(response)
+        return f"no choices, body: {body[:500]}"
+    choice = response.choices[0]
+    if choice.finish_reason == "error":
+        error = (getattr(choice, "model_extra", None) or {}).get("error") or (
+            getattr(response, "model_extra", None) or {}
+        ).get("error")
+        return f"finish_reason 'error', error: {error}"
+    return None
+
+
+def _create_with_retry(llm_config: LLMConfig, request_kwargs: dict, quiet: bool):
+    """Call the completions API, retrying error responses.
+
+    Raises RuntimeError when retries are exhausted, so callers see a failure
+    instead of a silent early stop reported as success.
+    """
+    detail = ""
+    for attempt in range(API_ERROR_MAX_RETRIES + 1):
+        response = llm_config.client.chat.completions.create(**request_kwargs)
+        detail = _response_error(response)
+        if detail is None:
+            return response
+        if not quiet:
+            print(
+                f"Warning: API returned an error response "
+                f"(attempt {attempt + 1}/{API_ERROR_MAX_RETRIES + 1}); {detail}"
+            )
+        if attempt < API_ERROR_MAX_RETRIES:
+            time.sleep(API_ERROR_BACKOFF_SECONDS * (attempt + 1))
+    raise RuntimeError(
+        f"API returned error responses on {API_ERROR_MAX_RETRIES + 1} attempts; "
+        f"last: {detail}"
+    )
+
 
 def load_prompt(prompt_path: Path) -> str:
     """Load a prompt from file."""
@@ -246,8 +295,8 @@ def run_agent(
             request_kwargs["tools"] = openai_tools
             request_kwargs["tool_choice"] = "auto"
 
-        # Call API
-        response = agent.llm_config.client.chat.completions.create(**request_kwargs)
+        # Call API (retries transient error responses, raises if they persist)
+        response = _create_with_retry(agent.llm_config, request_kwargs, quiet)
 
         # Track tokens (some providers return usage objects with None fields)
         if response.usage:
@@ -260,9 +309,6 @@ def run_agent(
             stats["token_consumption"]["total_tokens"] += (
                 response.usage.total_tokens or 0
             )
-
-        if not response.choices:
-            break
 
         assistant_message = response.choices[0].message
 
