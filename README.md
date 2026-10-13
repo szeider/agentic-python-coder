@@ -1,6 +1,6 @@
 # Agentic Python Coder
 
-[![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.13](https://img.shields.io/badge/python-3.13%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io/)
 [![UV](https://img.shields.io/badge/Packaged%20with-UV-purple)](https://github.com/astral-sh/uv)
@@ -18,14 +18,14 @@ For details on architecture and constraint modelling applications, see [[Szeider
 
 ### Prerequisites
 
-- Python 3.13
+- Python 3.13 or newer
 - UV package manager: `curl -LsSf https://astral.sh/uv/install.sh | sh`
 
 ### For the Coding Agent
 
 ```bash
-# Install as CLI tool
-uv tool install agentic-python-coder
+# Install as CLI tool (--python 3.14: ortools, used by cpmpy, has no 3.15 wheels yet)
+uv tool install --python 3.14 agentic-python-coder
 
 # Set up OpenRouter API key
 mkdir -p ~/.config/coder
@@ -64,7 +64,7 @@ Add to your Claude Desktop MCP configuration:
   "mcpServers": {
     "ipython": {
       "command": "uvx",
-      "args": ["--from", "agentic-python-coder", "ipython_mcp"]
+      "args": ["--python", "3.14", "--from", "agentic-python-coder", "ipython_mcp"]
     }
   }
 }
@@ -99,7 +99,7 @@ coder -i
 | `--version`, `-V` | Show version and exit |
 | `--init [TEMPLATE]` | Initialize example templates (cpmpy, clingo, regex, or all) |
 | `--task`, `-t FILE` | Load task from markdown file |
-| `--model MODEL` | Model name or JSON file (default: sonnet45) |
+| `--model MODEL` | Model name or JSON file (default: sonnet55) |
 | `--project`, `-p FILE` | Project template for domain-specific prompts |
 | `--with PACKAGE` | Add packages dynamically (repeatable) |
 | `--dir`, `-d DIR` | Working directory |
@@ -113,21 +113,25 @@ coder -i
 
 ```bash
 # Built-in models (versioned names)
-coder --model sonnet45 "task"   # Claude Sonnet 4.5 (default)
+coder --model sonnet45 "task"   # Claude Sonnet 4.5
 coder --model sonnet46 "task"   # Claude Sonnet 4.6
 coder --model sonnet5 "task"    # Claude Sonnet 5
 coder --model opus45 "task"     # Claude Opus 4.5
 coder --model opus48 "task"     # Claude Opus 4.8
+coder --model sonnet55 "task"   # Claude Sonnet 5.5 (default)
+coder --model opus55 "task"     # Claude Opus 5.5
 coder --model deepseek31 "task" # DeepSeek v3.1
-coder --model grok41 "task"     # X.AI Grok 4.1
+coder --model grok47 "task"     # X.AI Grok 4.7
 coder --model qwen3 "task"      # Qwen3 Coder
 coder --model gemini25 "task"     # Gemini Pro 2.5
-coder --model gemini3pro "task"    # Gemini 3 Pro Preview
 coder --model gemini31 "task"      # Gemini 3.1 Pro Preview
 coder --model gemini3flash "task"  # Gemini 3 Flash Preview (fast, low-cost)
 coder --model gpt52 "task"         # GPT-5.2
 coder --model gpt56sol "task"      # GPT-5.6 Sol
 coder --model gpt56terra "task"    # GPT-5.6 Terra
+coder --model gpt6sol "task"       # GPT-6 Sol
+coder --model gpt6astra "task"     # GPT-6 Astra
+coder --model gemini4argon "task"  # Gemini 4 Argon
 
 # Custom model (JSON file)
 coder --model ./mymodel.json "task"
@@ -184,7 +188,7 @@ import agentic_python_coder as coder
 messages, stats, log_path = coder.solve_task(
     "Write a fibonacci function",
     working_directory="/tmp/workspace",
-    model="sonnet45",
+    model="sonnet55",
     quiet=True,
 )
 
@@ -203,7 +207,7 @@ from agentic_python_coder import solve_task
 messages, stats, log_path = solve_task(
     task="Your task description",
     working_directory=".",           # Where to run and save files
-    model=None,                      # Model name: "sonnet45", "opus45", or JSON file
+    model=None,                      # Model name: "sonnet55", "opus55", or JSON file
     system_prompt=None,              # Custom system prompt (string)
     system_prompt_path=None,         # Path to system prompt file
     project_prompt=None,             # Domain-specific context
@@ -267,9 +271,9 @@ agent = create_coding_agent(
 ```python
 from agentic_python_coder import get_openrouter_llm, list_available_models
 
-llm = get_openrouter_llm(model="sonnet45")
+llm = get_openrouter_llm(model="sonnet55")
 print(list_available_models())
-# ['deepseek31', 'gemini25', 'gemini3flash', 'gemini3pro', 'gpt52', 'grok41', 'opus45', 'qwen3', 'sonnet45']
+# ['deepseek31', 'gemini25', 'gemini31', 'gemini3flash', 'gpt52', ...]
 ```
 
 ---
@@ -287,7 +291,7 @@ Add to your MCP settings (e.g., `~/.claude/claude_desktop_config.json` or projec
   "mcpServers": {
     "ipython": {
       "command": "uvx",
-      "args": ["--from", "agentic-python-coder", "ipython_mcp"]
+      "args": ["--python", "3.14", "--from", "agentic-python-coder", "ipython_mcp"]
     }
   }
 }

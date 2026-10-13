@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import signal
+import sys
 import threading
 import time
 import uuid
@@ -101,6 +102,10 @@ class UVKernelManager(KernelManager):
         # Don't load project dependencies (create clean environment)
         uv_prefix.append("--no-project")
 
+        # Match the host's Python; uv's default may be a newer version for
+        # which packages (e.g. ortools) have no wheels yet
+        uv_prefix.extend(["--python", f"{sys.version_info[0]}.{sys.version_info[1]}"])
+
         # Add user-specified packages
         for pkg in self.with_packages:
             uv_prefix.extend(["--with", pkg])
@@ -175,9 +180,8 @@ class PythonKernel:
 
             # Wait for kernel to be ready
             logger.debug("Waiting for kernel to be ready...")
-            self.kc.wait_for_ready(
-                timeout=30
-            )  # Increased timeout for UV package installation
+            # Generous timeout: a cold uv cache or a source build can take minutes
+            self.kc.wait_for_ready(timeout=180)
             logger.info("Kernel started successfully")
 
             # Configure IPython and inject startup code

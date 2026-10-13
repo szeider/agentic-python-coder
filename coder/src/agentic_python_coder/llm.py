@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 # Default model name (without .json)
-DEFAULT_MODEL = "sonnet45"
+DEFAULT_MODEL = "sonnet55"
 
 
 @dataclass

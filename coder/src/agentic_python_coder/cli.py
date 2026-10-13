@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from importlib import resources
 
+from openai import AuthenticationError
+
 from agentic_python_coder.runner import (
     solve_task,
     get_system_prompt_path,
@@ -485,6 +487,10 @@ def main():
                 display_statistics(stats)
                 print(f"Log saved to: {log_path}")
 
+    except (ValueError, AuthenticationError) as e:
+        # Configuration errors (missing or invalid API key): no traceback
+        print(f"Error: {e}")
+        sys.exit(1)
     except Exception as e:
         print(f"Error: {e}")
         import traceback

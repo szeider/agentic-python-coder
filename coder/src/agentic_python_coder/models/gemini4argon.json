@@ -1,0 +1,6 @@
+{
+  "path": "google/gemini-4-argon",
+  "temperature": 0.0,
+  "max_tokens": 16384,
+  "request_timeout": 120
+}

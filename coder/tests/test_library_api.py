@@ -49,13 +49,18 @@ def test_model_registry():
         "opus45",
         "opus48",
         "deepseek31",
-        "grok41",
         "qwen3",
         "gemini25",
         "gemini31",
         "gpt52",
         "gpt56sol",
         "gpt56terra",
+        "sonnet55",
+        "opus55",
+        "gpt6sol",
+        "gpt6astra",
+        "gemini4argon",
+        "grok47",
     ]
     for model in expected_models:
         assert model in models, f"Missing model: {model}"

@@ -1,7 +1,0 @@
-{
-  "path": "google/gemini-3-pro-preview",
-  "temperature": 0.3,
-  "max_tokens": 16384,
-  "top_p": 0.9,
-  "request_timeout": 120
-}

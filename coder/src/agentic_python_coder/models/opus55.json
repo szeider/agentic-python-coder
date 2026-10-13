@@ -1,0 +1,5 @@
+{
+  "path": "anthropic/claude-opus-5.5",
+  "max_tokens": 32768,
+  "no_sampling_params": true
+}

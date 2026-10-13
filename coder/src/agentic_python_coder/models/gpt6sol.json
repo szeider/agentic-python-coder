@@ -1,0 +1,5 @@
+{
+  "path": "openai/gpt-6-sol",
+  "max_tokens": 16384,
+  "no_sampling_params": true
+}
