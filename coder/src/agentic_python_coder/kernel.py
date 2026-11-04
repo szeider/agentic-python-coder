@@ -157,7 +157,11 @@ class PythonKernel:
         self.with_packages = with_packages or []
 
         # Set kernel's working directory
-        kernel_kwargs = {}
+        # Send the kernel's fd 1 to our stderr: inherited stdout is the
+        # JSON-RPC pipe under ipython_mcp, and native code (e.g. solver
+        # progress output) writing to fd 1 would corrupt the protocol.
+        # print() is unaffected (ipykernel routes it over iopub).
+        kernel_kwargs = {"stdout": 2}
         if cwd:
             kernel_kwargs["cwd"] = cwd
 

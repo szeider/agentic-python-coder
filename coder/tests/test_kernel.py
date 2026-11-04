@@ -210,3 +210,29 @@ class TestDeadlineTimeout:
         output = kernel.execute("1 + 1", deadline_timeout=30)
         assert output["error"] is None
         assert output["result"] == "2"
+
+
+class TestKernelStdoutIsolation:
+    """Kernel fd-level stdout must not reach the host's stdout (MCP pipe)."""
+
+    def test_fd1_write_goes_to_stderr_not_stdout(self):
+        import subprocess
+        import sys
+
+        script = (
+            "from agentic_python_coder.kernel import PythonKernel\n"
+            "k = PythonKernel()\n"
+            "out = k.execute('import os; os.write(1, b\"FD1_MARKER\\\\n\")')\n"
+            "assert out['error'] is None, out\n"
+            "k.shutdown()\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "FD1_MARKER" not in proc.stdout
+        # Positive control: the write happened and was redirected to stderr
+        assert "FD1_MARKER" in proc.stderr
