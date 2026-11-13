@@ -27,7 +27,7 @@ dependencies = [
     "jupyter-client>=8.9.1",
     "ipykernel>=7.3.0",
     "PyYAML>=6.0.3",
-    "mcp>=1.28.1,<2",
+    "mcp>=1.28.1,<3",
 ]
 
 [project.scripts]

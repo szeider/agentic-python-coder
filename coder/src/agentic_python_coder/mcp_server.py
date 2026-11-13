@@ -5,6 +5,7 @@ Supports multiple concurrent kernels via kernel_id parameter.
 
 import ast
 import asyncio
+import importlib.metadata
 import json
 import logging
 import os
@@ -13,7 +14,7 @@ import threading
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from agentic_python_coder.kernel import (
     DEFAULT_KERNEL_ID,
@@ -27,11 +28,12 @@ from agentic_python_coder.kernel import (
     shutdown_all_kernels,
 )
 
+_MCP_V2 = int(importlib.metadata.version("mcp").split(".")[0]) >= 2
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Create MCP server
-server = Server("ipython_mcp")
+# The MCP server object is created at the end of the module (see _make_server).
 
 # Constants
 MAX_OUTPUT = 100 * 1024  # 100KB truncation limit
@@ -147,7 +149,6 @@ async def execute_with_timeout(
         return {"success": False, "kernel_id": kernel_id, "error": error_msg}
 
 
-@server.list_tools()
 async def list_tools():
     """List available MCP tools."""
     return [
@@ -296,7 +297,6 @@ Note: Call this, then call python_exec to continue working.""",
     ]
 
 
-@server.call_tool()
 async def call_tool(name: str, arguments: dict):
     """Handle tool calls."""
     loop = asyncio.get_running_loop()
@@ -567,6 +567,41 @@ import importlib.metadata
             text=json.dumps({"success": False, "error": f"Unknown tool: {name}"}),
         )
     ]
+
+
+async def _on_list_tools(ctx, params) -> ListToolsResult:
+    """mcp>=2 lowlevel handler: wrap the tool list in its result type."""
+    return ListToolsResult(tools=await list_tools())
+
+
+async def _on_call_tool(ctx, params) -> CallToolResult:
+    """mcp>=2 lowlevel handler.
+
+    v2 no longer wraps a returned content list, and an exception would become
+    a JSON-RPC error instead of an LLM-visible isError result (v1 behaviour),
+    so both are done here.
+    """
+    try:
+        content = await call_tool(params.name, params.arguments or {})
+    except Exception as e:  # keep v1 semantics: error text reaches the model
+        return CallToolResult(
+            content=[TextContent(type="text", text=str(e))], is_error=True
+        )
+    return CallToolResult(content=content)
+
+
+def _make_server() -> Server:
+    if _MCP_V2:
+        return Server(
+            "ipython_mcp", on_list_tools=_on_list_tools, on_call_tool=_on_call_tool
+        )
+    srv = Server("ipython_mcp")
+    srv.list_tools()(list_tools)
+    srv.call_tool()(call_tool)
+    return srv
+
+
+server = _make_server()
 
 
 async def run_server():

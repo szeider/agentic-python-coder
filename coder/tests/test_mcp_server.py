@@ -45,9 +45,14 @@ class TestListTools:
         """python_exec has correct schema."""
         tools = await list_tools()
         exec_tool = next(t for t in tools if t.name == "python_exec")
-        assert "code" in exec_tool.inputSchema["properties"]
-        assert "timeout" in exec_tool.inputSchema["properties"]
-        assert "code" in exec_tool.inputSchema["required"]
+        assert (
+            "code" in exec_tool.model_dump(by_alias=True)["inputSchema"]["properties"]
+        )
+        assert (
+            "timeout"
+            in exec_tool.model_dump(by_alias=True)["inputSchema"]["properties"]
+        )
+        assert "code" in exec_tool.model_dump(by_alias=True)["inputSchema"]["required"]
 
 
 class TestAutoStart:

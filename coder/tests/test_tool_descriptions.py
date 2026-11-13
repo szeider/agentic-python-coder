@@ -67,7 +67,9 @@ class TestMCPToolDescriptions:
     async def test_every_tool_has_nonempty_schema(self):
         for tool in await list_tools():
             assert tool.description.strip(), tool.name
-            assert tool.inputSchema.get("type") == "object", tool.name
+            assert (
+                tool.model_dump(by_alias=True)["inputSchema"].get("type") == "object"
+            ), tool.name
 
 
 if __name__ == "__main__":
