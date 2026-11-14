@@ -302,5 +302,119 @@ class TestConversationLogStatus:
         assert complete["status"] == "step_limit_reached"
 
 
+def _tool_call(call_id, name, arguments):
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": arguments},
+    }
+
+
+# A fixed run_agent-style message list (dicts only) covering every event kind
+_LOG_MESSAGES = [
+    {"role": "system", "content": "sys"},
+    {"role": "user", "content": "task"},
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            _tool_call("c1", "python_exec", json.dumps({"code": "print(6 * 7)"})),
+            _tool_call(
+                "c2", "save_code", json.dumps({"code": "x = 1\n", "filename": "s.py"})
+            ),
+            _tool_call(
+                "c3",
+                "todo_write",
+                json.dumps(
+                    {
+                        "todos": [
+                            {"content": "a", "status": "done"},
+                            {"content": "b", "status": "pending", "id": "2"},
+                        ]
+                    }
+                ),
+            ),
+            _tool_call("c4", "other_tool", "not json"),
+            _tool_call("c5", "python_exec", None),
+        ],
+    },
+    {
+        "role": "tool",
+        "tool_call_id": "c1",
+        "content": json.dumps({"success": True, "stdout": "42\n"}),
+    },
+    {
+        "role": "tool",
+        "tool_call_id": "c2",
+        "content": json.dumps({"success": False, "error": "disk full"}),
+    },
+    {"role": "tool", "tool_call_id": "c3", "content": "Todo list updated"},
+    {
+        "role": "tool",
+        "tool_call_id": "c4",
+        "content": json.dumps({"error": "Unknown tool: other_tool"}),
+    },
+    {"role": "tool", "tool_call_id": "c5", "content": json.dumps({"success": False})},
+    {"role": "tool", "tool_call_id": "c6", "content": "42"},
+    {"role": "tool", "tool_call_id": "c7", "content": None},
+    {"role": "assistant", "content": "The answer is 42."},
+]
+
+_LOG_STATS = {
+    "tool_usage": {"python_exec": 2, "save_code": 1},
+    "token_consumption": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+    "execution_time_seconds": 1.5,
+    "step_limit_reached": False,
+}
+
+# Expected lines, recorded from the log writer before its object-message
+# branch was removed (the JSONL format is a public contract)
+_LOG_BODY = [
+    '{"event": "python_exec", "code_length": 12}',
+    '{"event": "save_code", "code_length": 6}',
+    '{"event": "todo", "action": "update", "count": 2, "tasks": [{"content": "a",'
+    ' "status": "done"}, {"content": "b", "status": "pending"}]}',
+    '{"event": "tool_call", "tool": "other_tool"}',
+    '{"event": "python_exec", "code_length": 0}',
+    '{"event": "tool_response", "success": true, "error": null}',
+    '{"event": "tool_response", "success": false, "error": "disk full"}',
+    '{"event": "tool_response", "success": false, "error": null}',
+]
+_LOG_STATISTICS = (
+    '{"event": "statistics", "tool_usage": {"python_exec": 2, "save_code": 1},'
+    ' "tokens": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},'
+    ' "execution_time": 1.5}'
+)
+
+
+class TestConversationLogGolden:
+    """save_conversation_log output is byte-identical to the recorded format."""
+
+    @staticmethod
+    def _expected(task, statistics, status):
+        lines = [f'{{"event": "start", "task": "{task}"}}', *_LOG_BODY]
+        if statistics:
+            lines.append(_LOG_STATISTICS)
+        lines.append(f'{{"event": "complete", "status": "{status}"}}')
+        return ("\n".join(lines) + "\n").encode()
+
+    def test_with_stats_and_basename(self, tmp_path):
+        log_path = save_conversation_log(tmp_path, _LOG_MESSAGES, _LOG_STATS, "golden")
+        assert log_path == tmp_path / "golden.jsonl"
+        assert log_path.read_bytes() == self._expected("golden", True, "success")
+
+    def test_without_stats_or_basename(self, tmp_path):
+        log_path = save_conversation_log(tmp_path, _LOG_MESSAGES)
+        assert log_path == tmp_path / "log.jsonl"
+        assert log_path.read_bytes() == self._expected("inline", False, "success")
+
+    def test_step_limit(self, tmp_path):
+        stats = {**_LOG_STATS, "step_limit_reached": True}
+        log_path = save_conversation_log(tmp_path, _LOG_MESSAGES, stats, "lim")
+        assert log_path.read_bytes() == self._expected(
+            "lim", True, "step_limit_reached"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -523,6 +523,144 @@ class TestStatusSideEffects:
         assert data["result"] == "42", data
 
 
+class TestResetPackageVersions:
+    """python_reset's version probe leaves the fresh kernel's namespace alone.
+
+    A real package install needs uv and network, so create_kernel is patched
+    to start a plain kernel; the probe then reads the test environment.
+    """
+
+    @pytest.fixture
+    def plain_kernels(self, monkeypatch):
+        from agentic_python_coder import mcp_server
+        from agentic_python_coder.kernel import create_kernel
+
+        monkeypatch.setattr(
+            mcp_server,
+            "create_kernel",
+            lambda kernel_id, packages=None: create_kernel(kernel_id, None),
+        )
+
+    @pytest.mark.asyncio
+    async def test_versions_reported_and_namespace_clean(self, plain_kernels):
+        import importlib.metadata
+
+        packages = ["ipykernel>=1", "Jupyter_Client", "./local/pkg", "no-such-dist-x"]
+        result = await call_tool("python_reset", {"packages": packages})
+        data = json.loads(result[0].text)
+        assert set(data) == {"success", "kernel_id", "message"}
+        assert data["success"] is True, data
+        ipk = importlib.metadata.version("ipykernel")
+        jc = importlib.metadata.version("jupyter-client")
+        assert data["message"] == (
+            f"Session started. Packages: ipykernel>=1 {ipk}, Jupyter_Client {jc},"
+            " ./local/pkg ?, no-such-dist-x ?"
+        )
+
+        kernel_id = data["kernel_id"]
+        result = await call_tool(
+            "python_exec",
+            {
+                "kernel_id": kernel_id,
+                "code": "print(sorted(Out), repr(_), len(In),"
+                " [n for n in ('importlib', 'versions', 'pkg') if n in globals()])",
+            },
+        )
+        out = json.loads(result[0].text)
+        assert out["success"] is True, out
+        # Out empty, _ untouched, only the startup code and this cell in In
+        assert out["stdout"].strip() == "[] '' 3 []", out
+
+    @pytest.mark.asyncio
+    async def test_reset_by_id_reports_versions(self, plain_kernels, monkeypatch):
+        from agentic_python_coder import mcp_server
+        from agentic_python_coder.kernel import restart_kernel
+
+        monkeypatch.setattr(
+            mcp_server,
+            "restart_kernel",
+            lambda kernel_id, packages=None: restart_kernel(kernel_id, None),
+        )
+        data = json.loads((await call_tool("python_reset", {}))[0].text)
+        kernel_id = data["kernel_id"]
+        await call_tool("python_exec", {"kernel_id": kernel_id, "code": "41 + 1"})
+        result = await call_tool(
+            "python_reset", {"kernel_id": kernel_id, "packages": ["IPyKernel[x]"]}
+        )
+        data = json.loads(result[0].text)
+        assert data["success"] is True, data
+        assert data["message"].startswith("Session started. Packages: IPyKernel[x] ")
+        assert not data["message"].endswith("?"), data
+
+
+class TestResetKeepsPackages:
+    """python_reset by id without packages keeps the kernel's packages and
+    says so. PythonKernel is patched to ignore packages at launch (no uv, no
+    network); the registry still records them as with a real install."""
+
+    @pytest.fixture
+    def plain_launch(self, monkeypatch):
+        from agentic_python_coder import kernel
+
+        class PlainKernel(kernel.PythonKernel):
+            def __init__(self, cwd=None, with_packages=None, **kwargs):
+                super().__init__(cwd=cwd, with_packages=None, **kwargs)
+
+        monkeypatch.setattr(kernel, "PythonKernel", PlainKernel)
+
+    @pytest.mark.asyncio
+    async def test_reset_by_id_without_packages_lists_kept(self, plain_launch):
+        import importlib.metadata
+
+        from agentic_python_coder.kernel import get_kernel_info
+
+        packages = ["ipykernel>=1", "jupyter_client"]
+        result = await call_tool("python_reset", {"packages": packages})
+        kernel_id = json.loads(result[0].text)["kernel_id"]
+
+        result = await call_tool("python_reset", {"kernel_id": kernel_id})
+        data = json.loads(result[0].text)
+        assert set(data) == {"success", "kernel_id", "message"}
+        assert data["success"] is True, data
+        assert data["kernel_id"] == kernel_id
+        assert get_kernel_info(kernel_id)["packages"] == packages
+        ipk = importlib.metadata.version("ipykernel")
+        jc = importlib.metadata.version("jupyter-client")
+        assert data["message"] == (
+            f"Session started. Packages: ipykernel>=1 {ipk}, jupyter_client {jc}"
+        )
+        assert "no packages" not in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_reset_by_id_without_any_packages(self, plain_launch):
+        result = await call_tool("python_reset", {})
+        kernel_id = json.loads(result[0].text)["kernel_id"]
+        result = await call_tool("python_reset", {"kernel_id": kernel_id})
+        data = json.loads(result[0].text)
+        assert data["message"] == "Session started (no packages)", data
+
+
+class TestDistributionName:
+    @pytest.mark.parametrize(
+        "requirement, name",
+        [
+            ("numpy", "numpy"),
+            ("pkg>=1,<2", "pkg"),
+            ("python-sat[pb]", "python-sat"),
+            ("cpmpy ; python_version >= '3.10'", "cpmpy"),
+            ("foo @ https://example.com/foo-1.0.tar.gz", "foo"),
+            ("./local/pkg", None),
+            ("/abs/path/pkg", None),
+            ("git+https://github.com/a/b.git", None),
+            ("", None),
+        ],
+    )
+    def test_distribution_name(self, requirement, name):
+        from agentic_python_coder.mcp_server import _distribution_name
+
+        assert _distribution_name(requirement) == name
+
+
 class TestTimeoutLowerBound:
     """Non-positive timeouts fall back to the default."""
 

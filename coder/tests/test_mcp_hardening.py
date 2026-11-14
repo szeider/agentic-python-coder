@@ -273,7 +273,7 @@ class TestNoOrphanedKernels:
 
 class TestInputSchemaValidation:
     """Arguments violating a tool's inputSchema yield an isError result
-    under both mcp 1.x (validated by the SDK) and mcp 2.x (validated by us)."""
+    (the server validates them; the mcp 2.x SDK does not)."""
 
     @pytest.mark.parametrize(
         "arguments",
@@ -284,6 +284,43 @@ class TestInputSchemaValidation:
         mcp_client.initialize()
         msg = mcp_client.request(
             "tools/call", {"name": "python_exec", "arguments": arguments}
+        )
+        result = msg["result"]
+        assert result.get("isError") is True, result
+        assert "validation error" in result["content"][0]["text"].lower()
+
+    def test_null_optional_arguments_accepted(self, mcp_client):
+        """Strict function calling sends null for omitted optional arguments."""
+        mcp_client.initialize()
+        result = mcp_client.call_tool(
+            "python_exec", {"code": "1 + 1", "kernel_id": None, "timeout": None}
+        )
+        assert result["success"] is True, result
+        assert result["result"] == "2"
+
+        result = mcp_client.call_tool(
+            "python_reset", {"packages": None, "kernel_id": None}
+        )
+        assert result["success"] is True, result
+        assert result["message"] == "Session started (no packages)"
+        kernel_id = result["kernel_id"]
+
+        result = mcp_client.call_tool(
+            "python_reset", {"kernel_id": kernel_id, "packages": None}
+        )
+        assert result["success"] is True, result
+        assert result["kernel_id"] == kernel_id
+
+        result = mcp_client.call_tool("python_status", {"kernel_id": None})
+        assert result["kernel_id"] == "_default", result
+        assert result["active"] is True
+        assert kernel_id in result["all_kernels"]
+
+    def test_null_required_argument_rejected(self, mcp_client):
+        mcp_client.initialize()
+        msg = mcp_client.request(
+            "tools/call",
+            {"name": "python_exec", "arguments": {"code": None, "timeout": None}},
         )
         result = msg["result"]
         assert result.get("isError") is True, result

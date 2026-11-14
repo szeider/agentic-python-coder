@@ -5,22 +5,24 @@ Supports multiple concurrent kernels via kernel_id parameter.
 
 import ast
 import asyncio
-import importlib.metadata
 import json
 import logging
 import os
 import signal
 import threading
+from typing import List, Optional
 
 import jsonschema
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
+from packaging.requirements import InvalidRequirement, Requirement
 
 from agentic_python_coder.kernel import (
     DEFAULT_KERNEL_ID,
     create_kernel,
     execute_in_kernel,
+    get_kernel_info,
     interrupt_kernel_by_id,
     kernel_exists,
     kill_all_kernel_process_groups,
@@ -29,8 +31,6 @@ from agentic_python_coder.kernel import (
     restart_kernel,
     shutdown_all_kernels,
 )
-
-_MCP_V2 = int(importlib.metadata.version("mcp").split(".")[0]) >= 2
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -69,6 +69,29 @@ def _status_probe(expr: str) -> str:
     sys.stdout.write survives a user-shadowed print.
     """
     return f"if True:\n    __import__('sys').stdout.write(repr({expr}) + '\\n')\n"
+
+
+def _distribution_name(requirement: str) -> Optional[str]:
+    """Distribution name of a requirement string ("pkg>=1", "pkg[extra]").
+
+    None when the string is not a PEP 508 requirement, e.g. a local path or
+    a VCS URL, whose distribution name is unknown before installation.
+    """
+    try:
+        return Requirement(requirement).name
+    except InvalidRequirement:
+        return None
+
+
+def _package_versions_probe(packages: List[str]) -> str:
+    """Probe code writing {requirement: version or "?"} to stdout."""
+    pairs = [(p, _distribution_name(p)) for p in packages]
+    return _status_probe(
+        "{req: '?' if name is None else getattr(next(iter("
+        "__import__('importlib.metadata').metadata.distributions(name=name)),"
+        " None), 'version', '?')"
+        f" for req, name in {pairs!r}}}"
+    )
 
 
 def get_kernel_id(arguments: dict) -> str:
@@ -347,41 +370,34 @@ async def call_tool(name: str, arguments: dict):
                             ),
                         )
                     ]
+                # Without packages the kernel keeps the ones it had: report
+                # what it actually runs with
+                if not packages:
+                    try:
+                        packages = list(get_kernel_info(kernel_id)["packages"] or [])
+                    except KeyError:
+                        pass
 
             if packages:
-                # Try to get package versions
-                version_code = (
-                    """
-import importlib.metadata
-versions = {}
-for pkg in %r:
-    try:
-        versions[pkg] = importlib.metadata.version(pkg)
-    except:
-        versions[pkg] = "?"
-versions
-"""
-                    % packages
-                )
+                msg = f"Session started with packages: {', '.join(packages)}"
+                # Same probe discipline as python_status: no names bound, no
+                # history entry, _ untouched
                 try:
-                    result = await execute_with_timeout(
-                        version_code, DEFAULT_TIMEOUT, kernel_id
+                    probe = _package_versions_probe(packages)
+                    results = await loop.run_in_executor(
+                        None,
+                        lambda: probe_kernel(kernel_id, [probe], DEFAULT_TIMEOUT),
                     )
-                    if result.get("result"):
-                        versions = ast.literal_eval(result["result"])
+                    result = results[0] if results else None
+                    if result and result.get("error") is None and result.get("stdout"):
+                        versions = ast.literal_eval(result["stdout"].strip())
                         if isinstance(versions, dict):
                             pkg_list = ", ".join(
                                 f"{p} {v}" for p, v in versions.items()
                             )
                             msg = f"Session started. Packages: {pkg_list}"
-                        else:
-                            msg = (
-                                f"Session started with packages: {', '.join(packages)}"
-                            )
-                    else:
-                        msg = f"Session started with packages: {', '.join(packages)}"
                 except Exception:
-                    msg = f"Session started with packages: {', '.join(packages)}"
+                    pass
             else:
                 msg = "Session started (no packages)"
 
@@ -587,23 +603,30 @@ versions
 
 
 async def _on_list_tools(ctx, params) -> ListToolsResult:
-    """mcp>=2 lowlevel handler: wrap the tool list in its result type."""
+    """Lowlevel handler: wrap the tool list in its result type."""
     return ListToolsResult(tools=await list_tools())
 
 
 async def _on_call_tool(ctx, params) -> CallToolResult:
-    """mcp>=2 lowlevel handler.
+    """Lowlevel handler.
 
-    v2 no longer wraps a returned content list, and an exception would become
-    a JSON-RPC error instead of an LLM-visible isError result (v1 behaviour),
-    so both are done here.
+    The SDK does not wrap a returned content list, and an exception would
+    become a JSON-RPC error instead of an LLM-visible isError result, so both
+    are done here.
     """
     arguments = params.arguments or {}
-    # v2 does not validate arguments against inputSchema; v1 did
+    # The SDK does not validate arguments against inputSchema
     tool = next((t for t in await list_tools() if t.name == params.name), None)
     if tool is not None:
+        schema = tool.model_dump(by_alias=True)["inputSchema"]
+        # Strict function calling sends null for omitted optional arguments:
+        # treat those as absent so the defaults apply (null for a required
+        # argument still fails validation)
+        required = set(schema.get("required", []))
+        arguments = {
+            k: v for k, v in arguments.items() if v is not None or k in required
+        }
         try:
-            schema = tool.model_dump(by_alias=True)["inputSchema"]
             jsonschema.validate(instance=arguments, schema=schema)
         except jsonschema.ValidationError as e:
             return CallToolResult(
@@ -616,7 +639,7 @@ async def _on_call_tool(ctx, params) -> CallToolResult:
             )
     try:
         content = await call_tool(params.name, arguments)
-    except Exception as e:  # keep v1 semantics: error text reaches the model
+    except Exception as e:  # error text reaches the model
         return CallToolResult(
             content=[TextContent(type="text", text=str(e))], is_error=True
         )
@@ -624,14 +647,9 @@ async def _on_call_tool(ctx, params) -> CallToolResult:
 
 
 def _make_server() -> Server:
-    if _MCP_V2:
-        return Server(
-            "ipython_mcp", on_list_tools=_on_list_tools, on_call_tool=_on_call_tool
-        )
-    srv = Server("ipython_mcp")
-    srv.list_tools()(list_tools)
-    srv.call_tool()(call_tool)
-    return srv
+    return Server(
+        "ipython_mcp", on_list_tools=_on_list_tools, on_call_tool=_on_call_tool
+    )
 
 
 server = _make_server()
