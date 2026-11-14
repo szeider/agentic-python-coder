@@ -271,5 +271,29 @@ class TestNoOrphanedKernels:
         assert not survivors, f"orphaned kernel processes: {survivors}"
 
 
+class TestInputSchemaValidation:
+    """Arguments violating a tool's inputSchema yield an isError result
+    under both mcp 1.x (validated by the SDK) and mcp 2.x (validated by us)."""
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [{"code": "1 + 1", "timeout": "abc"}, {"timeout": 5}],
+        ids=["timeout-not-number", "code-missing"],
+    )
+    def test_invalid_arguments_rejected(self, mcp_client, arguments):
+        mcp_client.initialize()
+        msg = mcp_client.request(
+            "tools/call", {"name": "python_exec", "arguments": arguments}
+        )
+        result = msg["result"]
+        assert result.get("isError") is True, result
+        assert "validation error" in result["content"][0]["text"].lower()
+
+    def test_valid_arguments_accepted(self, mcp_client):
+        mcp_client.initialize()
+        result = mcp_client.call_tool("submit_code", {"code": "x = 1"})
+        assert result == {"ok": True}
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

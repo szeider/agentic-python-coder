@@ -1,5 +1,7 @@
 """Tests for the IPython kernel module."""
 
+import os
+
 import pytest
 from agentic_python_coder.kernel import (
     PythonKernel,
@@ -236,3 +238,200 @@ class TestKernelStdoutIsolation:
         assert "FD1_MARKER" not in proc.stdout
         # Positive control: the write happened and was redirected to stderr
         assert "FD1_MARKER" in proc.stderr
+
+
+class TestStartupNamespace:
+    """Startup code must not leak its imports into the user namespace."""
+
+    def test_startup_names_not_in_namespace(self, kernel):
+        output = kernel.execute("sorted(n for n in dir() if not n.startswith('_'))")
+        assert output["error"] is None, output
+        names = output["result"]
+        for leaked in ("sys", "warnings", "builtins", "InteractiveShell"):
+            assert f"'{leaked}'" not in names, names
+        # Positive control: the probe sees the namespace
+        assert "'get_ipython'" in names
+
+    def test_startup_behaviour_unchanged(self, kernel):
+        output = kernel.execute("input('x')")
+        assert output["error"] is not None  # input() must not hang
+        output = kernel.execute("x = 3\nx * 2")
+        assert output["result"] == "6"
+
+
+class TestNativeKernelspec:
+    """A user/system "python3" kernelspec must not replace our interpreter."""
+
+    def test_user_python3_kernelspec_ignored(self, tmp_path, monkeypatch):
+        import json
+        import os
+        import sys
+
+        spec_dir = tmp_path / "kernels" / "python3"
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "kernel.json").write_text(
+            json.dumps(
+                {
+                    "argv": [
+                        sys.executable,
+                        "-m",
+                        "ipykernel_launcher",
+                        "-f",
+                        "{connection_file}",
+                    ],
+                    "display_name": "Foreign Python 3",
+                    "language": "python",
+                    "env": {"FOREIGN_KERNELSPEC_MARKER": "1"},
+                }
+            )
+        )
+        monkeypatch.setenv("JUPYTER_PATH", str(tmp_path))
+        k = PythonKernel()
+        try:
+            output = k.execute(
+                "import os, sys; "
+                "(os.environ.get('FOREIGN_KERNELSPEC_MARKER'), sys.executable)"
+            )
+        finally:
+            k.shutdown()
+        assert output["error"] is None, output
+        marker, exe = eval(output["result"])
+        assert marker is None, "kernel was launched from the foreign kernelspec"
+        assert os.path.realpath(exe) == os.path.realpath(sys.executable)
+
+
+class TestTracebackNoAnsi:
+    """Error tracebacks must be plain text (no ANSI colour codes)."""
+
+    def test_error_has_no_ansi_escapes(self, kernel):
+        output = kernel.execute("1 / 0")
+        assert output["error"] is not None
+        assert "ZeroDivisionError" in output["error"]
+        assert "Traceback" in output["error"]  # traceback still included
+        assert "\x1b" not in output["error"]
+
+
+class TestKernelCrash:
+    """A dying kernel is reported promptly and can be restarted by ID."""
+
+    def test_crash_detected_promptly_and_restart_keeps_config(
+        self, tmp_path, monkeypatch
+    ):
+        import time
+
+        from agentic_python_coder import kernel as kernel_mod
+
+        # Record how kernels are (re)started; packages are dropped for the
+        # real launch so the test needs no uv/network
+        launches = []
+        real_kernel_cls = kernel_mod.PythonKernel
+
+        def recording_kernel(cwd=None, with_packages=None, **kw):
+            launches.append((cwd, with_packages))
+            return real_kernel_cls(cwd=cwd, **kw)
+
+        monkeypatch.setattr(kernel_mod, "PythonKernel", recording_kernel)
+
+        kid = kernel_mod.create_kernel(cwd=str(tmp_path))
+        try:
+            with kernel_mod._kernels_lock:
+                state = kernel_mod._kernels[kid]
+            state.packages = ["fakepkg"]  # pretend it was created with packages
+            old_kernel = state.kernel
+
+            start = time.monotonic()
+            result = kernel_mod.execute_in_kernel(
+                kid, "import os; os._exit(1)", timeout=30
+            )
+            elapsed = time.monotonic() - start
+            assert elapsed < 10, f"crash took {elapsed:.1f}s to report"
+            assert "crash" in result["error"].lower(), result
+            assert "timed out" not in result["error"].lower()
+
+            # Dead kernel's client channels and manager were released
+            assert old_kernel.kc is None
+            assert old_kernel.km is None
+
+            # Restart by ID with the same packages and cwd
+            kernel_mod.restart_kernel(kid)
+            assert launches[-1] == (str(tmp_path), ["fakepkg"])
+            info = kernel_mod.get_kernel_info(kid)
+            assert info["packages"] == ["fakepkg"]
+            assert info["cwd"] == str(tmp_path)
+            out = kernel_mod.execute_in_kernel(kid, "import os; os.getcwd()")
+            assert out["error"] is None, out
+            assert os.path.realpath(eval(out["result"])) == os.path.realpath(tmp_path)
+        finally:
+            kernel_mod.shutdown_kernel_by_id(kid)
+
+
+class TestRetiredKernelRaces:
+    """Callers holding a KernelState that another caller retired."""
+
+    @pytest.fixture
+    def kmod(self):
+        from agentic_python_coder import kernel as kernel_mod
+
+        yield kernel_mod
+        kernel_mod.shutdown_all_kernels()
+
+    def test_execute_on_retired_state_returns_crash_result(self, kmod):
+        kid = kmod.create_kernel()
+        with kmod._kernels_lock:
+            state = kmod._kernels[kid]
+        kmod._retire_dead_kernel(kid, state)  # caller A retires
+
+        # Caller B already held the state and now executes on it
+        out = state.kernel.execute("1 + 1")
+        assert out["error"] is not None and "died" in out["error"]
+
+    def test_execute_in_kernel_retired_midway_returns_crash_result(
+        self, kmod, monkeypatch
+    ):
+        kid = kmod.create_kernel()
+        with kmod._kernels_lock:
+            state = kmod._kernels[kid]
+        real_execute = state.kernel.execute
+
+        def execute_then_retired_by_other(code, deadline_timeout=60):
+            out = real_execute(code, deadline_timeout)
+            kmod._retire_dead_kernel(kid, state)  # another caller retires
+            return out
+
+        monkeypatch.setattr(state.kernel, "execute", execute_then_retired_by_other)
+        result = kmod.execute_in_kernel(kid, "1 + 1")
+        assert "crashed" in result["error"], result
+        assert result["kernel_id"] == kid
+
+    def test_stale_retire_does_not_record_crash(self, kmod):
+        kid = kmod.create_kernel()
+        with kmod._kernels_lock:
+            old_state = kmod._kernels[kid]
+        kmod._retire_dead_kernel(kid, old_state)
+        kmod.restart_kernel(kid)  # id comes back
+        assert kid not in kmod._crashed
+
+        # A delayed second caller retires the OLD state again
+        kmod._retire_dead_kernel(kid, old_state)
+        assert kid not in kmod._crashed
+        assert kmod.kernel_exists(kid)  # the new kernel is untouched
+
+    def test_shutdown_forgets_crash_record(self, kmod):
+        kid = kmod.create_kernel()
+        with kmod._kernels_lock:
+            state = kmod._kernels[kid]
+        kmod._retire_dead_kernel(kid, state)
+        assert kid in kmod._crashed
+        assert not isinstance(kmod._crashed[kid], kmod.KernelState)
+
+        kmod.shutdown_kernel_by_id(kid)
+        assert kid not in kmod._crashed
+        with pytest.raises(KeyError):
+            kmod.restart_kernel(kid)
+
+        kid2 = kmod.create_kernel()
+        with kmod._kernels_lock:
+            state2 = kmod._kernels[kid2]
+        kmod._retire_dead_kernel(kid2, state2)
+        kmod.shutdown_all_kernels()
+        assert kid2 not in kmod._crashed

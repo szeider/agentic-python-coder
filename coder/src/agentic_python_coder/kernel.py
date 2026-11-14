@@ -21,6 +21,7 @@ from queue import Empty
 from typing import Any, Dict, List, Optional
 
 from jupyter_client import KernelManager
+from jupyter_client.kernelspec import KernelSpecManager
 
 log_level = os.environ.get("CODER_LOG_LEVEL", "WARNING").upper()
 logging.basicConfig(
@@ -45,12 +46,48 @@ class KernelState:
     last_used: float = field(default_factory=time.time)
 
 
+def _dead_output() -> Dict[str, Any]:
+    return {
+        "stdout": "",
+        "stderr": "",
+        "result": None,
+        "error": "Kernel died during execution",
+    }
+
+
 # Kernel registry and global lock
 _kernels: Dict[str, Optional[KernelState]] = {}
 _kernels_lock = threading.Lock()
 
+
+@dataclass
+class _CrashRecord:
+    """Restart configuration of a kernel whose process died."""
+
+    packages: List[str]
+    cwd: Optional[str]
+
+
+# Kernels whose process died, by ID, so that restart_kernel() can bring them
+# back with the same packages and cwd. Guarded by _kernels_lock.
+_crashed: Dict[str, _CrashRecord] = {}
+
+# ANSI escape sequences (IPython colours its tracebacks)
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
 # Suppress Jupyter warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+
+def _native_kernel_spec_manager() -> KernelSpecManager:
+    """Kernelspec manager that only knows ipykernel's built-in "python3" spec.
+
+    With the default search path, a user or system kernelspec named
+    "python3" (Anaconda, Jupyter installs) would replace the interpreter,
+    environment and launch arguments. The built-in spec launches
+    ``sys.executable -m ipykernel_launcher -f {connection_file}``.
+    """
+    return KernelSpecManager(kernel_dirs=[])
 
 
 class UVKernelManager(KernelManager):
@@ -170,11 +207,17 @@ class PythonKernel:
             if with_packages is not None:
                 logger.info(f"Starting UV kernel with packages: {with_packages}")
                 self.km = UVKernelManager(
-                    with_packages=with_packages, cwd=cwd, kernel_name="python3"
+                    with_packages=with_packages,
+                    cwd=cwd,
+                    kernel_name="python3",
+                    kernel_spec_manager=_native_kernel_spec_manager(),
                 )
             else:
                 logger.info("Starting standard kernel (no dynamic packages)")
-                self.km = KernelManager(kernel_name="python3")
+                self.km = KernelManager(
+                    kernel_name="python3",
+                    kernel_spec_manager=_native_kernel_spec_manager(),
+                )
 
             # Start the kernel
             logger.debug(f"Starting kernel in directory: {cwd}")
@@ -200,30 +243,35 @@ class PythonKernel:
 
     def _inject_startup_code(self):
         """Inject safety and configuration code: block input(), set matplotlib, etc."""
+        # Runs inside a function so its imports do not leak into the user
+        # namespace (code relying on them would fail when run standalone)
         startup_code = """
-import sys
-import warnings
-import builtins
-from IPython.core.interactiveshell import InteractiveShell
+def __coder_startup():
+    import warnings
+    import builtins
+    from IPython.core.interactiveshell import InteractiveShell
 
-# Configure IPython to display last expression value
-InteractiveShell.ast_node_interactivity = 'last_expr'
+    # Configure IPython to display last expression value
+    InteractiveShell.ast_node_interactivity = 'last_expr'
 
-# Suppress pkg_resources deprecation warning from CPMpy
-warnings.filterwarnings('ignore', message='pkg_resources is deprecated', category=UserWarning)
-warnings.filterwarnings('ignore', message='.*pkg_resources.*', category=DeprecationWarning)
+    # Suppress pkg_resources deprecation warning from CPMpy
+    warnings.filterwarnings('ignore', message='pkg_resources is deprecated', category=UserWarning)
+    warnings.filterwarnings('ignore', message='.*pkg_resources.*', category=DeprecationWarning)
 
-# Block interactive input() - not supported in MCP/automated sessions
-def _blocked_input(*args, **kwargs):
-    raise RuntimeError("Interactive input() not supported")
-builtins.input = _blocked_input
+    # Block interactive input() - not supported in MCP/automated sessions
+    def _blocked_input(*args, **kwargs):
+        raise RuntimeError("Interactive input() not supported")
+    builtins.input = _blocked_input
 
-# Set matplotlib to non-interactive backend if available
-try:
-    import matplotlib
-    matplotlib.use('Agg')
-except ImportError:
-    pass
+    # Set matplotlib to non-interactive backend if available
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+    except ImportError:
+        pass
+
+__coder_startup()
+del __coder_startup
 """
         self._execute_raw(startup_code)
 
@@ -238,20 +286,53 @@ except ImportError:
         except Exception:
             pass  # Best effort cleanup
 
-    def _execute_raw(self, code: str, deadline_timeout: int = 60) -> Dict[str, str]:
+    def _alive(self) -> bool:
+        """True if the kernel process runs (False once shut down/retired)."""
+        km = self.km if hasattr(self, "km") else None
+        return km is not None and km.is_alive()
+
+    def _execute_raw(
+        self,
+        code: str,
+        deadline_timeout: int = 60,
+        store_history: bool = True,
+        interrupt_on_timeout: bool = True,
+    ) -> Dict[str, str]:
         """Execute code without locking (internal use only).
 
         Args:
             code: Python code to execute
             deadline_timeout: Hard deadline in seconds for entire execution
+            store_history: Record the cell in IPython history
+            interrupt_on_timeout: Interrupt the kernel when the deadline hits
 
         Returns:
             Dict with stdout, stderr, result, and error fields
         """
+        return self._execute_collect(
+            code, deadline_timeout, store_history, interrupt_on_timeout
+        )[0]
+
+    def _execute_collect(
+        self,
+        code: str,
+        deadline_timeout: int = 60,
+        store_history: bool = True,
+        interrupt_on_timeout: bool = True,
+    ) -> tuple:
+        """Like _execute_raw, but returns (output, completed).
+
+        completed is False when the kernel died or the deadline hit before
+        the kernel reported idle.
+        """
+        if self.kc is None or not self._alive():
+            # Shut down or retired by another caller while we waited
+            return _dead_output(), False
+
         # Send the execution request (silent=False to get execute_result)
         # allow_stdin=False prevents kernel from requesting input
         msg_id = self.kc.execute(
-            code, silent=False, store_history=True, allow_stdin=False
+            code, silent=False, store_history=store_history, allow_stdin=False
         )
 
         # Collect output
@@ -279,17 +360,23 @@ except ImportError:
                 elif msg_type == "execute_result":
                     output["result"] = content["data"].get("text/plain", "")
                 elif msg_type == "error":
-                    output["error"] = f"{content['ename']}: {content['evalue']}"
+                    error = f"{content['ename']}: {content['evalue']}"
                     # Include traceback for debugging
                     if content.get("traceback"):
-                        output["error"] += "\n" + "\n".join(content["traceback"])
+                        error += "\n" + "\n".join(content["traceback"])
+                    output["error"] = _ANSI_RE.sub("", error)
                 elif msg_type == "status" and content["execution_state"] == "idle":
                     completed = True
                     break  # Only exit on idle status
             except Empty:
+                # No idle status will ever come from a dead kernel: report
+                # the crash now instead of waiting for the deadline
+                if not self._alive():
+                    output["error"] = "Kernel died during execution"
+                    return output, False
                 continue  # Keep waiting, don't break
 
-        if not completed:
+        if not completed and interrupt_on_timeout:
             # Deadline hit while the kernel was still running: report a
             # timeout instead of silently returning partial output as success,
             # and interrupt so the kernel doesn't block the next execution
@@ -304,7 +391,7 @@ except ImportError:
             except Exception:
                 pass  # Best effort
 
-        return output
+        return output, completed
 
     def execute(self, code: str, deadline_timeout: int = 60) -> Dict[str, str]:
         """Execute code with thread-safe locking.
@@ -346,6 +433,10 @@ except ImportError:
                 try:
                     if self.km.is_alive():
                         self.km.shutdown_kernel(now=True)
+                    else:
+                        # Dead kernel: still release the control socket,
+                        # zmq context and connection file
+                        self.km.cleanup_resources()
                 except Exception:
                     pass
                 self.km = None  # Clear reference
@@ -366,6 +457,25 @@ except ImportError:
 # =============================================================================
 # Core Registry Functions
 # =============================================================================
+
+
+def _retire_dead_kernel(kernel_id: str, state: KernelState) -> None:
+    """Drop a dead kernel from the registry, keeping its config for restart.
+
+    Releases the dead kernel's client channels and manager resources.
+    Callers must not hold the kernel's exec lock.
+    """
+    with _kernels_lock:
+        # Record only if this call removed this exact state: a delayed
+        # caller must not resurrect an ID that was reset or shut down since
+        if _kernels.get(kernel_id) is state:
+            _kernels.pop(kernel_id)
+            _crashed[kernel_id] = _CrashRecord(list(state.packages), state.cwd)
+    try:
+        with state.kernel._exec_lock:
+            state.kernel.shutdown()
+    except Exception:
+        pass  # Best effort
 
 
 def create_kernel(
@@ -418,6 +528,7 @@ def create_kernel(
         )
         with _kernels_lock:
             _kernels[kernel_id] = state
+            _crashed.pop(kernel_id, None)
         logger.info(f"Created kernel {kernel_id}")
         return kernel_id
     except Exception:
@@ -453,9 +564,8 @@ def execute_in_kernel(
             raise KeyError(f"Kernel {kernel_id} is being created")
 
     # Check if alive before execution
-    if not state.kernel.km.is_alive():
-        with _kernels_lock:
-            _kernels.pop(kernel_id, None)
+    if not state.kernel._alive():
+        _retire_dead_kernel(kernel_id, state)
         raise RuntimeError(f"Kernel {kernel_id} is dead")
 
     # Execute (uses per-kernel lock internally)
@@ -464,15 +574,52 @@ def execute_in_kernel(
     # Update last_used
     state.last_used = time.time()
 
-    # Check if crashed during execution
-    if not state.kernel.km.is_alive():
-        with _kernels_lock:
-            _kernels.pop(kernel_id, None)
-        result["error"] = f"Kernel {kernel_id} crashed during execution"
+    # Check if crashed during execution (or retired by another caller)
+    if not state.kernel._alive():
+        _retire_dead_kernel(kernel_id, state)
+        result["error"] = (
+            f"Kernel {kernel_id} crashed during execution."
+            " Call python_reset to restart it."
+        )
 
     # Always include kernel_id in result
     result["kernel_id"] = kernel_id
     return result
+
+
+def probe_kernel(
+    kernel_id: str, codes: List[str], timeout: int
+) -> Optional[List[Dict[str, Any]]]:
+    """Run introspection snippets in an idle kernel (for python_status).
+
+    Never waits behind or interrupts running user code: returns None when
+    the kernel is unknown, dead or busy; a dead kernel is retired. Snippets
+    are not stored in the IPython history. If a snippet does not complete,
+    the remaining ones are not sent and the results so far are returned.
+    """
+    with _kernels_lock:
+        state = _kernels.get(kernel_id)
+    if state is None:
+        return None
+    kernel = state.kernel
+    if not kernel._exec_lock.acquire(blocking=False):
+        return None  # busy
+    results: List[Dict[str, Any]] = []
+    try:
+        if kernel._alive():
+            for code in codes:
+                output, completed = kernel._execute_collect(
+                    code, timeout, store_history=False, interrupt_on_timeout=False
+                )
+                if not completed:
+                    break
+                results.append(output)
+    finally:
+        kernel._exec_lock.release()
+    if not kernel._alive():
+        _retire_dead_kernel(kernel_id, state)
+        return None
+    return results
 
 
 def shutdown_kernel_by_id(kernel_id: str) -> bool:
@@ -483,6 +630,7 @@ def shutdown_kernel_by_id(kernel_id: str) -> bool:
     """
     with _kernels_lock:
         state = _kernels.pop(kernel_id, None)
+        _crashed.pop(kernel_id, None)  # an explicit shutdown forgets a crash
 
     if state is None:
         return False
@@ -508,15 +656,15 @@ def interrupt_kernel_by_id(kernel_id: str) -> bool:
             return False
         state = _kernels[kernel_id]
 
-    if state is None or not state.kernel.km.is_alive():
+    km = state.kernel.km if state is not None else None
+    if km is None or not km.is_alive():
         return False
 
-    state.kernel.km.interrupt_kernel()
+    km.interrupt_kernel()
     time.sleep(0.5)  # Grace period
 
-    if not state.kernel.km.is_alive():
-        with _kernels_lock:
-            _kernels.pop(kernel_id, None)
+    if not state.kernel._alive():
+        _retire_dead_kernel(kernel_id, state)
         raise RuntimeError(f"Kernel {kernel_id} died from interrupt")
 
     return True
@@ -532,10 +680,21 @@ def restart_kernel(
         kernel_id: Kernel to restart.
         with_packages: New packages (None = keep existing).
 
+    A kernel that died (and was dropped from the registry) is restarted
+    with the packages and cwd it had.
+
     Raises:
         KeyError: If kernel not found.
         RuntimeError: If new kernel fails to start.
     """
+    with _kernels_lock:
+        crashed = None if kernel_id in _kernels else _crashed.get(kernel_id)
+    if crashed is not None:
+        packages = with_packages if with_packages is not None else crashed.packages
+        create_kernel(kernel_id, packages, crashed.cwd)
+        logger.info(f"Restarted crashed kernel {kernel_id}")
+        return
+
     with _kernels_lock:
         if kernel_id not in _kernels:
             raise KeyError(f"Unknown kernel: {kernel_id}")
@@ -627,6 +786,7 @@ def shutdown_all_kernels():
     """Shutdown all kernels. Called by atexit."""
     with _kernels_lock:
         kernel_ids = list(_kernels.keys())
+        _crashed.clear()
 
     for kid in kernel_ids:
         try:

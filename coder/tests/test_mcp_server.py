@@ -432,3 +432,136 @@ class TestMultiKernel:
 
         assert data["success"] is False
         assert "not found" in data["error"].lower()
+
+
+class TestKernelCrashRecovery:
+    """A crashed kernel is reported promptly and python_reset revives its ID."""
+
+    @pytest.mark.asyncio
+    async def test_crash_then_reset_by_id(self):
+        import time
+
+        result = await call_tool("python_reset", {})
+        kid = json.loads(result[0].text)["kernel_id"]
+
+        start = time.monotonic()
+        result = await call_tool(
+            "python_exec",
+            {"code": "import os; os._exit(1)", "kernel_id": kid, "timeout": 30},
+        )
+        elapsed = time.monotonic() - start
+        data = json.loads(result[0].text)
+        assert data["success"] is False
+        assert "timed out" not in data["error"].lower(), data
+        assert "crash" in data["error"].lower(), data
+        assert elapsed < 10, f"crash took {elapsed:.1f}s to report"
+
+        result = await call_tool("python_reset", {"kernel_id": kid})
+        data = json.loads(result[0].text)
+        assert data["success"] is True, data
+        assert data["kernel_id"] == kid
+
+        result = await call_tool("python_exec", {"code": "1 + 1", "kernel_id": kid})
+        data = json.loads(result[0].text)
+        assert data["success"] is True, data
+        assert data["result"] == "2"
+
+
+class TestStatusSideEffects:
+    """python_status must not interrupt running code or touch user state."""
+
+    @pytest.mark.asyncio
+    async def test_status_does_not_interrupt_busy_kernel(self, monkeypatch):
+        import time
+
+        from agentic_python_coder import mcp_server
+
+        # Short probe timeout: the old code interrupted the kernel after it
+        monkeypatch.setattr(mcp_server, "STATUS_PROBE_TIMEOUT", 1)
+
+        await call_tool("python_exec", {"code": "x = 1"})
+        exec_task = asyncio.create_task(
+            call_tool(
+                "python_exec",
+                {"code": "import time; time.sleep(4); 'done'", "timeout": 30},
+            )
+        )
+        await asyncio.sleep(1.0)  # let the execution take the kernel
+
+        start = time.monotonic()
+        result = await call_tool("python_status", {})
+        elapsed = time.monotonic() - start
+        status = json.loads(result[0].text)
+        assert set(status) == {
+            "kernel_id",
+            "active",
+            "all_kernels",
+            "python_version",
+            "packages",
+            "variables",
+        }
+        assert status["active"] is True
+        assert elapsed < 2, f"status blocked for {elapsed:.1f}s"
+
+        data = json.loads((await exec_task)[0].text)
+        assert data["success"] is True, data
+        assert data["result"] == "'done'"
+
+    @pytest.mark.asyncio
+    async def test_status_keeps_underscore_and_namespace(self):
+        await call_tool("python_exec", {"code": "x = 1"})
+        await call_tool("python_exec", {"code": "41 + 1"})
+
+        result = await call_tool("python_status", {})
+        status = json.loads(result[0].text)
+        assert status["python_version"]
+        assert status["packages"]
+        assert status["variables"] == ["x"]
+
+        result = await call_tool("python_exec", {"code": "_"})
+        data = json.loads(result[0].text)
+        assert data["result"] == "42", data
+
+
+class TestTimeoutLowerBound:
+    """Non-positive timeouts fall back to the default."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("timeout", [-5, 0])
+    async def test_non_positive_timeout_uses_default(self, timeout):
+        result = await call_tool("python_exec", {"code": "1 + 1", "timeout": timeout})
+        data = json.loads(result[0].text)
+        assert data["success"] is True, data
+        assert data["result"] == "2"
+
+
+class TestStatusDeadIdleKernel:
+    """python_status retires a kernel that died while idle."""
+
+    @pytest.mark.asyncio
+    async def test_dead_idle_kernel_reported_inactive(self):
+        import signal
+        import time
+
+        from agentic_python_coder import kernel as kernel_mod
+
+        result = await call_tool("python_reset", {})
+        kid = json.loads(result[0].text)["kernel_id"]
+        with kernel_mod._kernels_lock:
+            km = kernel_mod._kernels[kid].kernel.km
+        km.signal_kernel(signal.SIGKILL)
+        deadline = time.monotonic() + 10
+        while km.is_alive() and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+        assert not km.is_alive()
+
+        status = json.loads(
+            (await call_tool("python_status", {"kernel_id": kid}))[0].text
+        )
+        assert status["active"] is False, status
+        assert kid not in status["all_kernels"]
+        assert not kernel_mod.kernel_exists(kid)
+
+        # The slot is freed and the id can be revived
+        data = json.loads((await call_tool("python_reset", {"kernel_id": kid}))[0].text)
+        assert data["success"] is True, data

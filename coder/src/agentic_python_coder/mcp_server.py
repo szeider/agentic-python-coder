@@ -12,6 +12,7 @@ import os
 import signal
 import threading
 
+import jsonschema
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
@@ -24,6 +25,7 @@ from agentic_python_coder.kernel import (
     kernel_exists,
     kill_all_kernel_process_groups,
     list_kernels,
+    probe_kernel,
     restart_kernel,
     shutdown_all_kernels,
 )
@@ -57,6 +59,16 @@ def truncate_output(result: dict) -> dict:
         if isinstance(value, str) and len(value) > MAX_OUTPUT:
             result[key] = value[:MAX_OUTPUT] + f"\n[{key} truncated at {max_kb}KB]"
     return result
+
+
+def _status_probe(expr: str) -> str:
+    """Code that writes repr(expr) to stdout.
+
+    Writing (instead of a last-expression value) keeps the probe out of the
+    user's ``_``/``Out``, ``__import__`` keeps it from binding names, and
+    sys.stdout.write survives a user-shadowed print.
+    """
+    return f"if True:\n    __import__('sys').stdout.write(repr({expr}) + '\\n')\n"
 
 
 def get_kernel_id(arguments: dict) -> str:
@@ -312,25 +324,29 @@ async def call_tool(name: str, arguments: dict):
                     None,
                     lambda: create_kernel(None, packages if packages else None),
                 )
-            elif kernel_exists(kernel_id):
-                # kernel_id provided and exists: RESET it
-                await loop.run_in_executor(
-                    None,
-                    lambda: restart_kernel(kernel_id, packages if packages else None),
-                )
             else:
-                # kernel_id provided but doesn't exist: error
-                return [
-                    TextContent(
-                        type="text",
-                        text=json.dumps(
-                            {
-                                "success": False,
-                                "error": f"Kernel {kernel_id} not found. Omit kernel_id to create a new kernel.",
-                            }
+                # kernel_id provided: RESET it (also brings back a kernel
+                # that crashed, with its packages and cwd)
+                try:
+                    await loop.run_in_executor(
+                        None,
+                        lambda: restart_kernel(
+                            kernel_id, packages if packages else None
                         ),
                     )
-                ]
+                except KeyError:
+                    # kernel_id provided but doesn't exist: error
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "success": False,
+                                    "error": f"Kernel {kernel_id} not found. Omit kernel_id to create a new kernel.",
+                                }
+                            ),
+                        )
+                    ]
 
             if packages:
                 # Try to get package versions
@@ -403,6 +419,8 @@ versions
             )
         except (TypeError, ValueError):
             timeout = DEFAULT_TIMEOUT
+        if not timeout > 0:  # also catches NaN
+            timeout = DEFAULT_TIMEOUT
         kernel_id = get_kernel_id(arguments)
 
         if not code.strip():
@@ -459,44 +477,43 @@ versions
         }
 
         if is_active:
-            # Get Python version
+            # Probes run only when the kernel is idle (a busy kernel keeps
+            # the defaults above); they never interrupt user code
+            probes = {
+                "python_version": _status_probe("__import__('sys').version"),
+                "packages": _status_probe(
+                    "[f\"{d.metadata['Name']} {d.version}\" for d in"
+                    " __import__('importlib.metadata').metadata.distributions()"
+                    " if d.metadata['Name'] not in"
+                    " ('pip', 'setuptools', 'wheel', 'ipykernel', 'jupyter-client')"
+                    "][:20]"
+                ),
+                "variables": _status_probe(
+                    "[name for name in dir() if not name.startswith('_')"
+                    " and name not in"
+                    " ('In', 'Out', 'get_ipython', 'exit', 'quit', 'open')]"
+                ),
+            }
             try:
-                result = await execute_with_timeout(
-                    "import sys; sys.version", STATUS_PROBE_TIMEOUT, kernel_id
+                results = await loop.run_in_executor(
+                    None,
+                    lambda: probe_kernel(
+                        kernel_id, list(probes.values()), STATUS_PROBE_TIMEOUT
+                    ),
                 )
-                if result.get("result"):
-                    status["python_version"] = result["result"].strip("'\"")
             except Exception:
-                pass
-
-            # Get installed packages
-            try:
-                pkg_code = """
-import importlib.metadata
-[f"{d.metadata['Name']} {d.version}" for d in importlib.metadata.distributions()
- if d.metadata['Name'] not in ('pip', 'setuptools', 'wheel', 'ipykernel', 'jupyter-client')][:20]
-"""
-                result = await execute_with_timeout(
-                    pkg_code, STATUS_PROBE_TIMEOUT, kernel_id
-                )
-                if result.get("result"):
-                    status["packages"] = ast.literal_eval(result["result"])
-            except Exception:
-                pass
-
-            # Get user-defined variables
-            try:
-                var_code = """
-[name for name in dir() if not name.startswith('_')
- and name not in ('In', 'Out', 'get_ipython', 'exit', 'quit', 'open')]
-"""
-                result = await execute_with_timeout(
-                    var_code, STATUS_PROBE_TIMEOUT, kernel_id
-                )
-                if result.get("result"):
-                    status["variables"] = ast.literal_eval(result["result"])
-            except Exception:
-                pass
+                results = None
+            for key, result in zip(probes, results or []):
+                if result.get("error") is None and result.get("stdout"):
+                    try:
+                        status[key] = ast.literal_eval(result["stdout"].strip())
+                    except (ValueError, SyntaxError):
+                        pass
+            # The probe retires a kernel found dead: report it like any
+            # kernel that is not in the registry
+            if not kernel_exists(kernel_id):
+                status["active"] = False
+                status["all_kernels"] = [k["id"] for k in list_kernels()]
 
         return [TextContent(type="text", text=json.dumps(status))]
 
@@ -581,8 +598,24 @@ async def _on_call_tool(ctx, params) -> CallToolResult:
     a JSON-RPC error instead of an LLM-visible isError result (v1 behaviour),
     so both are done here.
     """
+    arguments = params.arguments or {}
+    # v2 does not validate arguments against inputSchema; v1 did
+    tool = next((t for t in await list_tools() if t.name == params.name), None)
+    if tool is not None:
+        try:
+            schema = tool.model_dump(by_alias=True)["inputSchema"]
+            jsonschema.validate(instance=arguments, schema=schema)
+        except jsonschema.ValidationError as e:
+            return CallToolResult(
+                content=[
+                    TextContent(
+                        type="text", text=f"Input validation error: {e.message}"
+                    )
+                ],
+                is_error=True,
+            )
     try:
-        content = await call_tool(params.name, params.arguments or {})
+        content = await call_tool(params.name, arguments)
     except Exception as e:  # keep v1 semantics: error text reaches the model
         return CallToolResult(
             content=[TextContent(type="text", text=str(e))], is_error=True
