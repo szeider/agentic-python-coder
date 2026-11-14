@@ -9,6 +9,11 @@ import tempfile
 import os
 import sys
 
+import pytest
+
+pytestmark = pytest.mark.network
+
+
 def run_coder_command(args, timeout=30):
     """Helper to run coder command and capture output."""
     result = subprocess.run(

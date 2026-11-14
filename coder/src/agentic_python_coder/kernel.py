@@ -46,6 +46,26 @@ class KernelState:
     last_used: float = field(default_factory=time.time)
 
 
+# Seconds the kernel gets to go idle after a timeout interrupt
+INTERRUPT_GRACE = 2.0
+# Seconds to wait for the shell execute_reply once iopub reported idle
+_REPLY_WAIT = 1.0
+# iopub poll interval: a dead kernel is noticed within one poll
+_POLL = 0.25
+# Messages read at most in one pass without waiting (chatty running code)
+_MAX_DRAIN = 1000
+# Seconds a reset waits for an in-flight call to release a killed kernel
+_RESET_LOCK_WAIT = 5.0
+
+_ABORTED_ERROR = (
+    "The kernel aborted this request after an earlier error;"
+    " this code was not executed. Send it again."
+)
+_EARLIER_RUNNING_ERROR = (
+    "Earlier code is still running in the kernel; this code was not executed."
+)
+
+
 def _dead_output() -> Dict[str, Any]:
     return {
         "stdout": "",
@@ -53,6 +73,19 @@ def _dead_output() -> Dict[str, Any]:
         "result": None,
         "error": "Kernel died during execution",
     }
+
+
+def _empty_output(error: Optional[str] = None) -> Dict[str, Any]:
+    return {"stdout": "", "stderr": "", "result": None, "error": error}
+
+
+@dataclass
+class _Request:
+    """An execute request whose completion has not been read yet."""
+
+    msg_id: str
+    idle: bool = False  # iopub reported idle for it
+    reply: Optional[str] = None  # status of its shell execute_reply
 
 
 # Kernel registry and global lock
@@ -71,6 +104,10 @@ class _CrashRecord:
 # Kernels whose process died, by ID, so that restart_kernel() can bring them
 # back with the same packages and cwd. Guarded by _kernels_lock.
 _crashed: Dict[str, _CrashRecord] = {}
+
+# IDs whose last restart replaced a kernel that was busy (read by the MCP
+# reset handler). Guarded by _kernels_lock.
+_replaced_busy: set = set()
 
 # ANSI escape sequences (IPython colours its tracebacks)
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -188,6 +225,9 @@ class PythonKernel:
         """
         # Per-kernel execution lock for thread safety
         self._exec_lock = threading.Lock()
+        # Request sent but not seen to complete (read and written only
+        # while holding _exec_lock). New code is sent only when it is None.
+        self._pending: Optional[_Request] = None
 
         # Store configuration for comparison
         self.cwd = cwd
@@ -273,7 +313,8 @@ def __coder_startup():
 __coder_startup()
 del __coder_startup
 """
-        self._execute_raw(startup_code)
+        with self._exec_lock:
+            self._execute_raw(startup_code)
 
     def _cleanup_on_error(self):
         """Clean up resources if initialization fails.
@@ -322,76 +363,230 @@ del __coder_startup
     ) -> tuple:
         """Like _execute_raw, but returns (output, completed).
 
-        completed is False when the kernel died or the deadline hit before
-        the kernel reported idle.
+        completed is False when the kernel died, the deadline hit before the
+        request completed, or earlier code is still running (then this code
+        is not sent). Caller holds _exec_lock.
         """
+        return self._execute_until(
+            code,
+            time.monotonic() + deadline_timeout,
+            deadline_timeout,
+            store_history,
+            interrupt_on_timeout,
+        )
+
+    def _execute_until(
+        self,
+        code: str,
+        deadline: float,
+        label: Any,
+        store_history: bool = True,
+        interrupt_on_timeout: bool = True,
+    ) -> tuple:
+        """_execute_collect with an absolute deadline; label is the timeout
+        printed in the timeout error."""
         if self.kc is None or not self._alive():
             # Shut down or retired by another caller while we waited
             return _dead_output(), False
+        if not self._drain_pending():
+            return _empty_output(_EARLIER_RUNNING_ERROR), False
+        if not self._alive():
+            return _dead_output(), False
 
-        # Send the execution request (silent=False to get execute_result)
-        # allow_stdin=False prevents kernel from requesting input
-        msg_id = self.kc.execute(
-            code, silent=False, store_history=store_history, allow_stdin=False
-        )
+        output, outcome = self._run(code, deadline, store_history, interrupt_on_timeout)
+        if outcome in ("stopped", "running", "timeout_dead"):
+            # Deadline hit while the kernel was still running: report a
+            # timeout instead of silently returning partial output as success
+            if output["error"] is None:
+                output["error"] = (
+                    f"Execution timed out after {label} seconds"
+                    " (partial output returned)"
+                )
+        return output, outcome in ("done", "aborted")
 
-        # Collect output
-        output = {"stdout": "", "stderr": "", "result": None, "error": None}
+    def _handle_iopub(
+        self, req: _Request, msg: Dict[str, Any], output: Optional[Dict[str, Any]]
+    ) -> None:
+        """Apply one iopub message of req to output (None: discard output)."""
+        # Only process messages for this request
+        if msg["parent_header"].get("msg_id") != req.msg_id:
+            return
+        msg_type = msg["header"]["msg_type"]
+        content = msg["content"]
+        if msg_type == "status":
+            if content["execution_state"] == "idle":
+                req.idle = True
+            return
+        if output is None:
+            return
+        if msg_type == "stream":
+            if content["name"] == "stdout":
+                output["stdout"] += content["text"]
+            elif content["name"] == "stderr":
+                output["stderr"] += content["text"]
+        elif msg_type == "execute_result":
+            output["result"] = content["data"].get("text/plain", "")
+        elif msg_type == "error":
+            error = f"{content['ename']}: {content['evalue']}"
+            # Include traceback for debugging
+            if content.get("traceback"):
+                error += "\n" + "\n".join(content["traceback"])
+            output["error"] = _ANSI_RE.sub("", error)
 
-        # Wait for and collect messages with hard deadline
-        deadline = time.monotonic() + deadline_timeout
-        completed = False
+    def _read_shell(self, req: _Request, timeout: float = 0.0) -> None:
+        """Read shell messages until req's execute_reply or none is ready.
 
-        while time.monotonic() < deadline:
+        Waits up to timeout for the first message, then reads without
+        waiting. Replies to other requests are discarded.
+        """
+        for _ in range(_MAX_DRAIN):
+            if req.reply is not None:
+                return
             try:
-                msg = self.kc.get_iopub_msg(timeout=1.0)
-                msg_type = msg["header"]["msg_type"]
-                content = msg["content"]
+                msg = self.kc.get_shell_msg(timeout=timeout)
+            except Empty:
+                return
+            timeout = 0.0
+            if (
+                msg["parent_header"].get("msg_id") == req.msg_id
+                and msg["header"]["msg_type"] == "execute_reply"
+            ):
+                req.reply = msg["content"].get("status", "ok")
 
-                # Only process messages for our execution
-                if msg["parent_header"].get("msg_id") != msg_id:
-                    continue
+    def _collect(
+        self, req: _Request, until: float, output: Optional[Dict[str, Any]]
+    ) -> str:
+        """Read req's messages until it completes, the kernel dies or until.
 
-                if msg_type == "stream":
-                    if content["name"] == "stdout":
-                        output["stdout"] += content["text"]
-                    elif content["name"] == "stderr":
-                        output["stderr"] += content["text"]
-                elif msg_type == "execute_result":
-                    output["result"] = content["data"].get("text/plain", "")
-                elif msg_type == "error":
-                    error = f"{content['ename']}: {content['evalue']}"
-                    # Include traceback for debugging
-                    if content.get("traceback"):
-                        error += "\n" + "\n".join(content["traceback"])
-                    output["error"] = _ANSI_RE.sub("", error)
-                elif msg_type == "status" and content["execution_state"] == "idle":
-                    completed = True
-                    break  # Only exit on idle status
+        Messages that already arrived are read even after until (bounded),
+        so code that finished at the deadline counts as finished. Completion
+        needs req's iopub idle and its shell execute_reply; a reply that lags
+        behind idle is awaited up to _REPLY_WAIT (within until, at least
+        0.1 s), then completion is assumed.
+
+        Returns "done", "aborted" (the kernel did not execute it), "dead"
+        or "deadline".
+        """
+        late = 0
+        while True:
+            self._read_shell(req)
+            if req.idle:
+                now = time.monotonic()
+                end = now + min(_REPLY_WAIT, max(until - now, 0.1))
+                while req.reply is None:
+                    remaining = end - time.monotonic()
+                    if remaining <= 0 or not self._alive():
+                        break
+                    self._read_shell(req, min(remaining, 0.1))
+                return "aborted" if req.reply == "aborted" else "done"
+            remaining = until - time.monotonic()
+            try:
+                msg = self.kc.get_iopub_msg(timeout=min(max(remaining, 0.0), _POLL))
             except Empty:
                 # No idle status will ever come from a dead kernel: report
                 # the crash now instead of waiting for the deadline
                 if not self._alive():
-                    output["error"] = "Kernel died during execution"
-                    return output, False
-                continue  # Keep waiting, don't break
+                    return "dead"
+                if remaining <= 0:
+                    return "deadline"
+                continue
+            self._handle_iopub(req, msg, output)
+            if remaining <= 0:
+                late += 1
+                if late >= _MAX_DRAIN:
+                    return "deadline"
 
-        if not completed and interrupt_on_timeout:
-            # Deadline hit while the kernel was still running: report a
-            # timeout instead of silently returning partial output as success,
-            # and interrupt so the kernel doesn't block the next execution
-            if output["error"] is None:
-                output["error"] = (
-                    f"Execution timed out after {deadline_timeout} seconds"
-                    " (partial output returned)"
-                )
-            try:
-                self.km.interrupt_kernel()
-                time.sleep(0.5)  # grace period so the next execute isn't aborted
-            except Exception:
-                pass  # Best effort
+    def _drain_pending(self) -> bool:
+        """Read what arrived for the pending request, without waiting.
 
-        return output, completed
+        Returns True when nothing is pending (any more). Caller holds
+        _exec_lock.
+        """
+        req = self._pending
+        if req is None:
+            return True
+        if self.kc is None or not self._alive():
+            self._pending = None  # a dead kernel runs nothing
+            return True
+        if self._collect(req, time.monotonic(), None) == "deadline":
+            return False
+        self._pending = None
+        return True
+
+    def _interrupt(self) -> None:
+        try:
+            self.km.interrupt_kernel()
+        except Exception:
+            pass  # Best effort
+
+    def _run(
+        self,
+        code: str,
+        deadline: float,
+        store_history: bool = True,
+        interrupt_on_timeout: bool = True,
+    ) -> tuple:
+        """Send code and collect its output until deadline (monotonic).
+
+        Caller holds _exec_lock and found nothing pending. When the deadline
+        hits, the kernel is interrupted and gets INTERRUPT_GRACE seconds to
+        go idle. Returns (output, outcome), outcome one of "done", "aborted"
+        (not executed), "dead", and after the deadline "stopped" (the code
+        ended), "running" (still running, stays pending), "timeout_dead"
+        (died after the interrupt) or, without interrupt, "deadline" (still
+        running, stays pending). Output keeps the error collected before the
+        deadline, not the interrupt's KeyboardInterrupt.
+        """
+        output = _empty_output()
+        # silent=False to get execute_result; allow_stdin=False prevents
+        # input requests; stop_on_error=False: an error does not abort
+        # requests queued behind this one
+        msg_id = self.kc.execute(
+            code,
+            silent=False,
+            store_history=store_history,
+            allow_stdin=False,
+            stop_on_error=False,
+        )
+        req = self._pending = _Request(msg_id)
+        outcome = self._collect(req, deadline, output)
+        if outcome == "deadline" and interrupt_on_timeout:
+            error = output["error"]
+            self._interrupt()
+            outcome = {
+                "done": "stopped",
+                "aborted": "aborted",  # not executed, whenever it is seen
+                "dead": "timeout_dead",
+                "deadline": "running",
+            }[self._collect(req, time.monotonic() + INTERRUPT_GRACE, output)]
+            output["error"] = error
+        if outcome not in ("deadline", "running"):
+            self._pending = None
+        if outcome == "aborted":
+            output = _empty_output(_ABORTED_ERROR)
+        elif outcome == "dead":
+            output["error"] = "Kernel died during execution"
+        return output, outcome
+
+    def _wait_pending(self, interrupt_at: float, deadline: float) -> bool:
+        """Wait for the pending request; interrupt it once at interrupt_at.
+
+        Returns True when nothing is pending (any more). Caller holds
+        _exec_lock.
+        """
+        req = self._pending
+        if req is None or self.kc is None or not self._alive():
+            self._pending = None
+            return True
+        outcome = self._collect(req, interrupt_at, None)
+        if outcome == "deadline":
+            self._interrupt()
+            until = min(time.monotonic() + INTERRUPT_GRACE, deadline)
+            outcome = self._collect(req, until, None)
+        if outcome == "deadline":
+            return False
+        self._pending = None
+        return True
 
     def execute(self, code: str, deadline_timeout: int = 60) -> Dict[str, str]:
         """Execute code with thread-safe locking.
@@ -402,9 +597,46 @@ del __coder_startup
 
         Returns:
             Dict with stdout, stderr, result, and error fields
+
+        If earlier code is still running, it is waited for within this
+        call's deadline (interrupted once more at half of it); if it does
+        not end, this code is not executed and an error is returned.
         """
         with self._exec_lock:
-            return self._execute_raw(code, deadline_timeout)
+            start = time.monotonic()
+            deadline = start + deadline_timeout
+            if self._pending is not None and not self._wait_pending(
+                start + deadline_timeout / 2, deadline
+            ):
+                return _empty_output(_EARLIER_RUNNING_ERROR)
+            return self._execute_until(code, deadline, deadline_timeout)[0]
+
+    def _execute_bounded(self, code: str, timeout: float) -> Dict[str, Any]:
+        """Execution for the MCP server: one deadline for the whole call.
+
+        Waiting for the lock (an earlier call in flight) counts against
+        timeout; code is refused without being sent when the lock does not
+        come free in time or an abandoned request is still running. The
+        lock is released before returning. The result carries "_outcome":
+        an outcome of _run, "refused_lock" or "refused_pending".
+        """
+        deadline = time.monotonic() + timeout
+        if not self._exec_lock.acquire(timeout=timeout):
+            return dict(_empty_output(), _outcome="refused_lock")
+        try:
+            if self.kc is None or not self._alive():
+                return dict(_dead_output(), _outcome="dead")
+            if not self._drain_pending():
+                return dict(_empty_output(), _outcome="refused_pending")
+            if not self._alive():
+                return dict(_dead_output(), _outcome="dead")
+            if time.monotonic() >= deadline:
+                return dict(_empty_output(), _outcome="refused_lock")
+            output, outcome = self._run(code, deadline)
+            output["_outcome"] = outcome
+            return output
+        finally:
+            self._exec_lock.release()
 
     def shutdown(self):
         """Shutdown the kernel and clean up.
@@ -563,13 +795,36 @@ def execute_in_kernel(
         if state is None:
             raise KeyError(f"Kernel {kernel_id} is being created")
 
+    # Execute (uses per-kernel lock internally)
+    return _execute_by_id(
+        kernel_id, state, lambda k: k.execute(code, deadline_timeout=timeout)
+    )
+
+
+def _execute_bounded_in_kernel(
+    kernel_id: str, code: str, timeout: float
+) -> Dict[str, Any]:
+    """execute_in_kernel for the MCP server (see PythonKernel._execute_bounded).
+
+    The result also carries "_outcome".
+    """
+    with _kernels_lock:
+        if kernel_id not in _kernels:
+            raise KeyError(f"Unknown kernel: {kernel_id}")
+        state = _kernels[kernel_id]
+        if state is None:
+            raise KeyError(f"Kernel {kernel_id} is being created")
+    return _execute_by_id(kernel_id, state, lambda k: k._execute_bounded(code, timeout))
+
+
+def _execute_by_id(kernel_id: str, state: KernelState, run) -> Dict[str, Any]:
+    """Run run(kernel) on a registered kernel, retiring it if it died."""
     # Check if alive before execution
     if not state.kernel._alive():
         _retire_dead_kernel(kernel_id, state)
         raise RuntimeError(f"Kernel {kernel_id} is dead")
 
-    # Execute (uses per-kernel lock internally)
-    result = state.kernel.execute(code, deadline_timeout=timeout)
+    result = run(state.kernel)
 
     # Update last_used
     state.last_used = time.time()
@@ -605,9 +860,11 @@ def probe_kernel(
     if not kernel._exec_lock.acquire(blocking=False):
         return None  # busy
     results: List[Dict[str, Any]] = []
+    busy = False
     try:
         if kernel._alive():
-            for code in codes:
+            busy = not kernel._drain_pending()  # abandoned code still runs
+            for code in [] if busy else codes:
                 output, completed = kernel._execute_collect(
                     code, timeout, store_history=False, interrupt_on_timeout=False
                 )
@@ -619,7 +876,25 @@ def probe_kernel(
     if not kernel._alive():
         _retire_dead_kernel(kernel_id, state)
         return None
-    return results
+    return None if busy else results
+
+
+def _kernel_busy(kernel_id: str) -> bool:
+    """True if a call on the kernel is in flight or abandoned code runs.
+
+    Never waits and never interrupts.
+    """
+    with _kernels_lock:
+        state = _kernels.get(kernel_id)
+    if state is None:
+        return False
+    kernel = state.kernel
+    if not kernel._exec_lock.acquire(blocking=False):
+        return True  # a call is in flight
+    try:
+        return not kernel._drain_pending()
+    finally:
+        kernel._exec_lock.release()
 
 
 def shutdown_kernel_by_id(kernel_id: str) -> bool:
@@ -688,6 +963,7 @@ def restart_kernel(
         RuntimeError: If new kernel fails to start.
     """
     with _kernels_lock:
+        _replaced_busy.discard(kernel_id)
         crashed = None if kernel_id in _kernels else _crashed.get(kernel_id)
     if crashed is not None:
         packages = with_packages if with_packages is not None else crashed.packages
@@ -706,9 +982,10 @@ def restart_kernel(
         # Mark as restarting
         _kernels[kernel_id] = None
 
-    # Shutdown old kernel
-    with state.kernel._exec_lock:
-        state.kernel.shutdown()
+    # Shutdown old kernel (a busy one is killed without waiting for its code)
+    if _shutdown_replaced(kernel_id, state.kernel):
+        with _kernels_lock:
+            _replaced_busy.add(kernel_id)
 
     # Create new kernel with same ID
     packages = with_packages if with_packages is not None else old_packages
@@ -726,6 +1003,63 @@ def restart_kernel(
         with _kernels_lock:
             _kernels.pop(kernel_id, None)
         raise
+
+
+def _shutdown_replaced(kernel_id: str, kernel: "PythonKernel") -> bool:
+    """Shut down a kernel that a restart replaces; True if it was busy.
+
+    An idle kernel is shut down under its lock as before. A busy one (call
+    in flight or abandoned code running) has its process group killed
+    first: an in-flight collector then sees the dead kernel within one poll
+    and releases the lock. If the lock does not come free in time, the
+    sockets another thread may be reading are left open and the object is
+    dropped.
+    """
+    if kernel._exec_lock.acquire(blocking=False):
+        try:
+            busy = not kernel._drain_pending()
+            if busy:
+                _kill_process_group(kernel)
+            kernel.shutdown()
+            return busy
+        finally:
+            kernel._exec_lock.release()
+    _kill_process_group(kernel)
+    if kernel._exec_lock.acquire(timeout=_RESET_LOCK_WAIT):
+        try:
+            kernel.shutdown()
+        finally:
+            kernel._exec_lock.release()
+    else:
+        logger.warning(
+            f"Kernel {kernel_id}: killed, but its lock stayed held;"
+            " dropping the old kernel without closing its channels"
+        )
+    return True
+
+
+def _pop_replaced_busy(kernel_id: str) -> bool:
+    """True if the last restart of kernel_id replaced a busy kernel."""
+    with _kernels_lock:
+        if kernel_id in _replaced_busy:
+            _replaced_busy.discard(kernel_id)
+            return True
+        return False
+
+
+def _kill_process_group(kernel: "PythonKernel") -> None:
+    """SIGKILL the kernel's process group; never our own group."""
+    try:
+        own_pgid = os.getpgid(0)
+    except OSError:
+        own_pgid = None
+    try:
+        km = kernel.km
+        pgid = getattr(getattr(km, "provisioner", None), "pgid", None)
+        if pgid and pgid > 0 and pgid != own_pgid:
+            os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError, AttributeError):
+        pass  # Best effort
 
 
 # =============================================================================
@@ -805,21 +1139,9 @@ def kill_all_kernel_process_groups():
     process group. Kernels mid-creation (registry slot still None) cannot
     be reached here — that sub-second window is a known limitation.
     """
-    try:
-        own_pgid = os.getpgid(0)
-    except OSError:
-        own_pgid = None
-
     for state in list(_kernels.values()):
-        if state is None:
-            continue
-        try:
-            km = state.kernel.km
-            pgid = getattr(getattr(km, "provisioner", None), "pgid", None)
-            if pgid and pgid > 0 and pgid != own_pgid:
-                os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError, AttributeError):
-            pass  # Best effort
+        if state is not None:
+            _kill_process_group(state.kernel)
 
 
 # =============================================================================

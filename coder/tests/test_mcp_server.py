@@ -499,6 +499,7 @@ class TestStatusSideEffects:
             "python_version",
             "packages",
             "variables",
+            "kernel_busy",
         }
         assert status["active"] is True
         assert elapsed < 2, f"status blocked for {elapsed:.1f}s"

@@ -305,6 +305,7 @@ Add to your MCP settings (e.g., `~/.claude/claude_desktop_config.json` or projec
 | `python_reset` | Create new kernel (no `kernel_id`) OR reset existing kernel (with `kernel_id`). Optionally install packages. |
 | `python_status` | Check session state: active flag, all active kernel IDs, Python version, packages, variables. |
 | `python_interrupt` | Send interrupt signal to stop long-running code. Session state is preserved. |
+| `submit_code` | Submit the final standalone program (`code`). Syntax-checked with `compile()`, not executed or saved; returns `{"ok": true}` or `{"ok": false, "error": ...}`. |
 
 ### Multi-Agent Workflow
 

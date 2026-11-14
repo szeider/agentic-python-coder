@@ -20,8 +20,11 @@ from packaging.requirements import InvalidRequirement, Requirement
 
 from agentic_python_coder.kernel import (
     DEFAULT_KERNEL_ID,
+    INTERRUPT_GRACE,
+    _execute_bounded_in_kernel,
+    _kernel_busy,
+    _pop_replaced_busy,
     create_kernel,
-    execute_in_kernel,
     get_kernel_info,
     interrupt_kernel_by_id,
     kernel_exists,
@@ -42,7 +45,9 @@ MAX_OUTPUT = 100 * 1024  # 100KB truncation limit
 MAX_TIMEOUT = 300  # Maximum allowed timeout in seconds
 DEFAULT_TIMEOUT = 30  # Default timeout in seconds
 STATUS_PROBE_TIMEOUT = 10  # Timeout for python_status introspection probes
-KERNEL_TIMEOUT_BUFFER = 5  # Extra seconds for kernel deadline vs asyncio timeout
+# The kernel worker owns the execution timeout; this outer backstop only
+# guards against a worker that never returns
+BACKSTOP_SLACK = 10
 
 # Async lock for session operations (default kernel management)
 _session_lock = asyncio.Lock()
@@ -99,6 +104,79 @@ def get_kernel_id(arguments: dict) -> str:
     return arguments.get("kernel_id") or DEFAULT_KERNEL_ID
 
 
+def _exec_reply(raw: dict, timeout: float, kernel_id: str) -> dict:
+    """MCP reply for a result of _execute_bounded_in_kernel."""
+    outcome = raw.pop("_outcome", "done")
+    limit = f"{timeout}s"
+    if outcome in ("refused_pending", "refused_lock"):
+        if outcome == "refused_pending":
+            error = (
+                "Kernel busy with earlier code; this code was not executed."
+                " python_status shows when it is idle; python_interrupt tries"
+                " to stop the earlier code;"
+                f' python_reset(kernel_id="{kernel_id}") replaces the kernel.'
+            )
+        else:
+            error = (
+                f"Kernel was busy with an earlier call for the whole {limit}"
+                " of this call; this code was not executed."
+            )
+        return {
+            "success": False,
+            "kernel_id": kernel_id,
+            "error": error,
+            "executed": False,
+            "kernel_busy": True,
+            "timed_out": False,
+        }
+    if outcome == "aborted":
+        return {
+            "success": False,
+            "kernel_id": kernel_id,
+            "stdout": "",
+            "stderr": "",
+            "result": None,
+            "error": raw["error"],
+            "executed": False,
+            "kernel_busy": False,
+            "timed_out": False,
+        }
+    if outcome in ("stopped", "running", "timeout_dead"):
+        if outcome == "timeout_dead" or not kernel_exists(kernel_id):
+            return {
+                "success": False,
+                "kernel_id": kernel_id,
+                "error": f"Execution timed out after {limit}. Session crashed"
+                " - call python_reset to restart.",
+            }
+        if outcome == "stopped":
+            error = (
+                f"Execution timed out after {limit}."
+                " Code interrupted but session state preserved."
+            )
+        else:
+            error = (
+                f"Execution timed out after {limit}. The code is still"
+                " running; the interrupt did not stop it. The kernel takes no"
+                " new code until it ends. python_interrupt tries again;"
+                f' python_reset(kernel_id="{kernel_id}") replaces the kernel'
+                " and discards its state."
+            )
+        return truncate_output(
+            {
+                "success": False,
+                "kernel_id": kernel_id,
+                "error": error,
+                "timed_out": True,
+                "kernel_busy": outcome == "running",
+                "stdout": raw.get("stdout", ""),
+                "stderr": raw.get("stderr", ""),
+                "result": raw.get("result"),
+            }
+        )
+    return truncate_output(raw)
+
+
 async def execute_with_timeout(
     code: str, timeout: float = DEFAULT_TIMEOUT, kernel_id: str = DEFAULT_KERNEL_ID
 ) -> dict:
@@ -127,44 +205,25 @@ async def execute_with_timeout(
         }
 
     try:
-        # Run blocking execute_in_kernel() in thread pool
-        kernel_deadline = int(timeout) + KERNEL_TIMEOUT_BUFFER
+        # The worker waits `timeout` (lock wait included), interrupts, waits
+        # INTERRUPT_GRACE for the kernel to go idle and decides the outcome
         raw_result = await asyncio.wait_for(
             loop.run_in_executor(
                 None,
-                lambda: execute_in_kernel(kernel_id, code, timeout=kernel_deadline),
+                lambda: _execute_bounded_in_kernel(kernel_id, code, timeout),
             ),
-            timeout=timeout,
+            timeout=timeout + INTERRUPT_GRACE + BACKSTOP_SLACK,
         )
-        # Truncate and return
-        return truncate_output(raw_result)
+        return _exec_reply(raw_result, timeout, kernel_id)
 
     except asyncio.TimeoutError:
-        # Interrupt kernel (interrupt_kernel_by_id already includes grace period sleep)
-        try:
-            await loop.run_in_executor(None, lambda: interrupt_kernel_by_id(kernel_id))
-        except RuntimeError:
-            # Kernel died from interrupt
-            return {
-                "success": False,
-                "kernel_id": kernel_id,
-                "error": f"Execution timed out after {timeout}s. Session crashed - call python_reset to restart.",
-            }
-        except Exception as e:
-            logger.warning(f"Failed to interrupt kernel: {e}")
-            # Check if kernel still alive after failed interrupt
-            if not kernel_exists(kernel_id):
-                return {
-                    "success": False,
-                    "kernel_id": kernel_id,
-                    "error": f"Execution timed out after {timeout}s. Session crashed - call python_reset to restart.",
-                }
-
-        # Kernel still alive after interrupt
+        # The worker did not return: its execution state is unknown
         return {
             "success": False,
             "kernel_id": kernel_id,
-            "error": f"Execution timed out after {timeout}s. Code interrupted but session state preserved.",
+            "error": "No answer from the kernel worker; the state of this"
+            " execution is unknown. python_status shows whether the kernel is"
+            f' busy; python_reset(kernel_id="{kernel_id}") replaces the kernel.',
         }
 
     except KeyError as e:
@@ -339,6 +398,7 @@ async def call_tool(name: str, arguments: dict):
     if name == "python_reset":
         kernel_id = arguments.get("kernel_id")  # None means create new kernel
         packages = arguments.get("packages", [])
+        replaced_busy = False
 
         try:
             if kernel_id is None:
@@ -357,6 +417,7 @@ async def call_tool(name: str, arguments: dict):
                             kernel_id, packages if packages else None
                         ),
                     )
+                    replaced_busy = _pop_replaced_busy(kernel_id)
                 except KeyError:
                     # kernel_id provided but doesn't exist: error
                     return [
@@ -401,15 +462,16 @@ async def call_tool(name: str, arguments: dict):
             else:
                 msg = "Session started (no packages)"
 
-            logger.info(msg)
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {"success": True, "kernel_id": kernel_id, "message": msg}
-                    ),
+            reply = {"success": True, "kernel_id": kernel_id, "message": msg}
+            if replaced_busy:
+                if not msg.endswith("."):
+                    reply["message"] += "."
+                reply["message"] += (
+                    " The previous kernel was still running code and was terminated."
                 )
-            ]
+                reply["replaced_busy_kernel"] = True
+            logger.info(reply["message"])
+            return [TextContent(type="text", text=json.dumps(reply))]
         except Exception as e:
             return [
                 TextContent(
@@ -490,6 +552,7 @@ async def call_tool(name: str, arguments: dict):
             "python_version": None,
             "packages": [],
             "variables": [],
+            "kernel_busy": False,
         }
 
         if is_active:
@@ -530,6 +593,11 @@ async def call_tool(name: str, arguments: dict):
             if not kernel_exists(kernel_id):
                 status["active"] = False
                 status["all_kernels"] = [k["id"] for k in list_kernels()]
+            else:
+                # A call in flight or abandoned code still running
+                status["kernel_busy"] = await loop.run_in_executor(
+                    None, lambda: _kernel_busy(kernel_id)
+                )
 
         return [TextContent(type="text", text=json.dumps(status))]
 

@@ -152,7 +152,7 @@ cython_debug/
 uv.lock
 
 # Project specific
-tests/
+/tests/
 coder-examples/
 EXPERTISE/
 PROCESS_NOTES.md
