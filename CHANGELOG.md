@@ -2,9 +2,11 @@
 
 ## 4.0.0 (unreleased; release candidate 4.0.0rc1 published 2026-11-15)
 
-Kernel server (`ipython_mcp`): new kernel-id semantics. Tool names, parameter names and types, and existing result keys are unchanged; the Python API (`create_kernel`, `restart_kernel`, ...) keeps its signatures, and `create_kernel(None)` still returns an 8-hex id. The agent side (`coder`, `solve_task`) is unchanged.
+Kernel server (`ipython_mcp`): new kernel-id semantics. Tool names, parameter names and types, and existing result keys are unchanged; the Python API (`create_kernel`, `restart_kernel`, ...) keeps its signatures, and `create_kernel(None)` still returns an 8-hex id. The agent side (`coder`, `solve_task`) is unchanged except for the package isolation below.
 
 ### Breaking
+
+- A kernel started with packages (`python_reset(packages=[...])`, `coder --with`, `with_packages=`) can import only those packages, their dependencies and ipykernel. It no longer sees the server's virtual environment, an active `VIRTUAL_ENV`, a `.venv` in its working directory or a parent, or `PYTHONPATH` (uv now runs with `--isolated --no-env-file`). List every package such a kernel imports. Kernels without packages are unchanged. Needs uv 0.4.30 or newer; an older uv is refused with an error that names the version found.
 
 - `python_reset` without `kernel_id` (or with `null` or `""`) restarts the default kernel `_default`, the one every call without `kernel_id` uses, and starts it if it is not running. Before, it created a new kernel with an 8-hex id. A client that copies the returned `kernel_id` keeps working, since `"_default"` is accepted by every tool; a client that relied on a new isolated kernel per id-less reset now shares the default kernel and must pass its own `kernel_id`.
 - `python_reset(kernel_id="X")` with an id that has no kernel and no crash record creates kernel `X`. Before, it failed with "Kernel X not found". The client chooses the id: 1 to 64 letters, digits, `_`, `-`, `.`, starting with a letter or digit. `default`, `new`, `none`, `null` (any case) and ids starting with `_` other than `_default` are refused with an error that says to omit `kernel_id` for the default kernel.

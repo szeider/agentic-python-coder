@@ -138,6 +138,9 @@ def test_other_cause_appends_nothing(monkeypatch):
     i = cmd.index(BAD_PATH)
     assert cmd[i - 1 : i + 1] == ["--with", BAD_PATH], cmd
     assert "--no-project" in cmd and "--python" in cmd and "ipykernel" in cmd
+    # Same isolation as the launch: no surrounding venv, env file, PYTHONPATH
+    assert "--isolated" in cmd and "--no-env-file" in cmd, cmd
+    assert "PYTHONPATH" not in kwargs["env"]
     assert kwargs["start_new_session"] is True
     assert kwargs["stdout"] == kwargs["stdin"] == subprocess.DEVNULL
 
@@ -205,7 +208,8 @@ def test_diagnosis_huge_stderr_is_bounded():
 
 
 def test_diagnosis_writes_nothing_to_our_streams(capfd):
-    prefix = ["uv", "run", "--no-project", "--with", BAD_PATH, "--with", "ipykernel"]
+    prefix = ["uv", "run", "--isolated", "--no-project", "--no-env-file"]
+    prefix += ["--with", BAD_PATH, "--with", "ipykernel"]
     capfd.readouterr()
     reason = kmod._uv_diagnosis(prefix, None)
     assert BAD_PATH in reason and "Distribution not found" in reason, reason

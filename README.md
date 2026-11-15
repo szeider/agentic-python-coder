@@ -101,7 +101,7 @@ coder -i
 | `--task`, `-t FILE` | Load task from markdown file |
 | `--model MODEL` | Model name or JSON file (default: sonnet55) |
 | `--project`, `-p FILE` | Project template for domain-specific prompts |
-| `--with PACKAGE` | Add packages dynamically (repeatable) |
+| `--with PACKAGE` | Add packages dynamically (repeatable); the kernel then sees only these packages |
 | `--dir`, `-d DIR` | Working directory |
 | `--api-key KEY` | Override API key |
 | `--todo` | Enable task tracking tool |
@@ -328,6 +328,7 @@ python_exec(kernel_id="a-1", ...)         python_exec(kernel_id="b-1", ...)
 
 - `python_reset` with a known id restarts that kernel (`"created": false`). The same call works on first use, to clear state, and after a crash.
 - `packages`: a non-empty list replaces the kernel's packages; omitted, `null` or `[]` keeps them.
+- A kernel with packages can import exactly those packages and their dependencies: uv starts it in an isolated environment that ignores the server's virtual environment, `VIRTUAL_ENV`, a `.venv` in the working directory and `PYTHONPATH` (uv 0.4.30 or newer). A kernel without packages runs the server's own Python and sees its environment.
 - `python_exec`, `python_status` and `python_interrupt` never create a named kernel; an unknown id is an error that lists the live kernels.
 - If the default kernel crashed, the next `python_exec` restarts it with the same packages but does not run its code: the reply is an error with `"kernel_restarted": true` and `"executed": false`, and the code must be sent again. Earlier variables and imports are gone. A crashed named kernel is restarted by `python_reset(kernel_id=...)`.
 - All clients of one server process that omit `kernel_id` share the default kernel, and two clients that pick the same name share that kernel.

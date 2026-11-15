@@ -530,7 +530,7 @@ Separate kernel:
                     "packages": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "PyPI packages to install (e.g., ['numpy', 'pandas']). Uses UV for fast installation. The complete list for this kernel; it replaces the previous list. Omitted or empty: the kernel keeps its current packages.",
+                        "description": "PyPI packages to install (e.g., ['numpy', 'pandas']). Uses UV for fast installation. The complete list for this kernel; it replaces the previous list. The kernel can import only these packages and their dependencies. Omitted or empty: the kernel keeps its current packages.",
                         "default": [],
                     },
                     "kernel_id": {

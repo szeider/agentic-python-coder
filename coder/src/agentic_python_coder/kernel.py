@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from jupyter_client import KernelManager
 from jupyter_client.kernelspec import KernelSpecManager
+from packaging.version import Version
 
 log_level = os.environ.get("CODER_LOG_LEVEL", "WARNING").upper()
 logging.basicConfig(
@@ -135,6 +136,48 @@ _UV_DIAGNOSIS_READ = 8192
 _UV_DIAGNOSIS_TAIL = 1500
 
 
+# Oldest uv that knows every option of the launch command (--no-env-file)
+UV_MIN_VERSION = "0.4.30"
+
+# Problem text per uv executable path ("" = version fine or unknown)
+_uv_version_checked: Dict[str, str] = {}
+
+
+def _uv_version_problem(uv: str) -> str:
+    """Error text if the uv at path `uv` is older than UV_MIN_VERSION, else "".
+
+    An unreadable version gives "" (the launch then reports uv's own error).
+    """
+    if uv not in _uv_version_checked:
+        problem = ""
+        try:
+            out = subprocess.run(
+                [uv, "--version"], capture_output=True, text=True, timeout=10
+            ).stdout
+            found = Version(out.split()[1])
+            if found < Version(UV_MIN_VERSION):
+                problem = (
+                    f"uv {UV_MIN_VERSION} or newer is required for kernels with "
+                    f"packages (found uv {found} at {uv}). Update uv, e.g. with: "
+                    "uv self update"
+                )
+        except Exception:  # OSError, timeout, unexpected output
+            pass
+        _uv_version_checked[uv] = problem
+    return _uv_version_checked[uv]
+
+
+def _kernel_env_with_packages() -> Dict[str, str]:
+    """Environment for a kernel with packages: ours without PYTHONPATH.
+
+    PYTHONPATH would put modules from outside the requested packages on the
+    kernel's sys.path.
+    """
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    return env
+
+
 def _uv_diagnosis(uv_prefix: List[str], cwd: Optional[str]) -> str:
     """uv's reason why a kernel launched with uv_prefix died, or "".
 
@@ -149,6 +192,7 @@ def _uv_diagnosis(uv_prefix: List[str], cwd: Optional[str]) -> str:
             proc = subprocess.Popen(
                 list(uv_prefix) + ["python", "-c", "pass"],
                 cwd=cwd or None,
+                env=_kernel_env_with_packages(),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=err,
@@ -216,12 +260,17 @@ class UVKernelManager(KernelManager):
         # uv part of the last launch command, for diagnosing a failed start
         self.uv_prefix: Optional[List[str]] = None
 
-        # Check UV availability
-        if self.with_packages and not shutil.which("uv"):
-            raise RuntimeError(
-                "UV is required for dynamic package mode but not found in PATH. "
-                "Install it with: curl -LsSf https://astral.sh/uv/install.sh | sh"
-            )
+        # Check UV availability and version
+        if self.with_packages:
+            uv = shutil.which("uv")
+            if not uv:
+                raise RuntimeError(
+                    "UV is required for dynamic package mode but not found in PATH. "
+                    "Install it with: curl -LsSf https://astral.sh/uv/install.sh | sh"
+                )
+            problem = _uv_version_problem(uv)
+            if problem:
+                raise RuntimeError(problem)
 
     def format_kernel_cmd(self, extra_arguments=None):
         """Override to wrap kernel command with UV if packages specified."""
@@ -239,8 +288,11 @@ class UVKernelManager(KernelManager):
         if self.uv_cwd:
             uv_prefix.extend(["--directory", self.uv_cwd])
 
-        # Don't load project dependencies (create clean environment)
-        uv_prefix.append("--no-project")
+        # Exactly the requested packages: no project, and no surrounding
+        # virtual environment as base (uv would otherwise layer the packages
+        # on VIRTUAL_ENV or a .venv in the cwd or a parent), and no
+        # environment variables from a UV_ENV_FILE
+        uv_prefix.extend(["--isolated", "--no-project", "--no-env-file"])
 
         # Match the host's Python; uv's default may be a newer version for
         # which packages (e.g. ortools) have no wheels yet
@@ -305,9 +357,11 @@ class PythonKernel:
         # JSON-RPC pipe under ipython_mcp, and native code (e.g. solver
         # progress output) writing to fd 1 would corrupt the protocol.
         # print() is unaffected (ipykernel routes it over iopub).
-        kernel_kwargs = {"stdout": 2}
+        kernel_kwargs: Dict[str, Any] = {"stdout": 2}
         if cwd:
             kernel_kwargs["cwd"] = cwd
+        if with_packages:
+            kernel_kwargs["env"] = _kernel_env_with_packages()
 
         try:
             # Create appropriate kernel manager

@@ -59,7 +59,7 @@ STUBBORN = SIGIGN + "while True:\n    time.sleep(0.1)\n"
 def six_only_from_packages():
     """`import six` below proves that a kernel got its packages only if the
     test environment lacks six: a kernel without packages runs this
-    interpreter, and uv layers --with packages over the active venv."""
+    interpreter. (Kernels with packages no longer see the test venv.)"""
     if importlib.util.find_spec("six") is not None:
         pytest.fail(
             "six is installed in the test environment, so the six imports in"
