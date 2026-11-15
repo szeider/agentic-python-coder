@@ -302,24 +302,36 @@ Add to your MCP settings (e.g., `~/.claude/claude_desktop_config.json` or projec
 | Tool | Description |
 |------|-------------|
 | `python_exec` | Execute Python code. Auto-starts session if needed. Default 30s timeout. |
-| `python_reset` | Create new kernel (no `kernel_id`) OR reset existing kernel (with `kernel_id`). Optionally install packages. |
-| `python_status` | Check session state: active flag, all active kernel IDs, Python version, packages, variables. |
+| `python_reset` | Restart a kernel with a clean state, optionally with packages. Without `kernel_id`: the default kernel. With `kernel_id`: that kernel, created if no kernel has this id (`"created": true`). |
+| `python_status` | Check session state: active flag, all active kernel IDs, crash flag, Python version, packages, variables. |
 | `python_interrupt` | Send interrupt signal to stop long-running code. Session state is preserved. |
 | `submit_code` | Submit the final standalone program (`code`). Syntax-checked with `compile()`, not executed or saved; returns `{"ok": true}` or `{"ok": false, "error": ...}`. |
 
-### Multi-Agent Workflow
+### Kernels and Multi-Agent Workflow
 
-For parallel agents, each agent gets its own kernel:
+Every call without `kernel_id` uses the default kernel `_default`. It starts on the first `python_exec`; `python_reset(packages=[...])` restarts it with those packages, and later `python_exec` calls without `kernel_id` run there:
 
 ```
-Agent A                              Agent B
-────────                             ────────
-python_reset() → kernel_id="aaa"     python_reset() → kernel_id="bbb"
-python_exec(kernel_id="aaa", ...)    python_exec(kernel_id="bbb", ...)
-python_exec(kernel_id="aaa", ...)    python_exec(kernel_id="bbb", ...)
+python_reset(packages=["numpy"])    → kernel_id="_default"
+python_exec(code="import numpy")    → runs in _default
 ```
 
-Simple single-agent use: just call `python_exec()` — the default kernel auto-starts.
+A separate kernel is created by `python_reset` with an id of your choice (1 to 64 letters, digits, `_`, `-`, `.`, starting with a letter or digit; `default`, `new`, `none`, `null` and ids starting with `_` are reserved). Pass the same `kernel_id` on every later call:
+
+```
+Agent A                                   Agent B
+────────                                  ────────
+python_reset(kernel_id="a-1") → created   python_reset(kernel_id="b-1") → created
+python_exec(kernel_id="a-1", ...)         python_exec(kernel_id="b-1", ...)
+python_exec(kernel_id="a-1", ...)         python_exec(kernel_id="b-1", ...)
+```
+
+- `python_reset` with a known id restarts that kernel (`"created": false`). The same call works on first use, to clear state, and after a crash.
+- `packages`: a non-empty list replaces the kernel's packages; omitted, `null` or `[]` keeps them.
+- `python_exec`, `python_status` and `python_interrupt` never create a named kernel; an unknown id is an error that lists the live kernels.
+- If the default kernel crashed, the next `python_exec` restarts it with the same packages but does not run its code: the reply is an error with `"kernel_restarted": true` and `"executed": false`, and the code must be sent again. Earlier variables and imports are gone. A crashed named kernel is restarted by `python_reset(kernel_id=...)`.
+- All clients of one server process that omit `kernel_id` share the default kernel, and two clients that pick the same name share that kernel.
+- `CODER_MAX_KERNELS` (default 10) limits the named kernels; the default kernel does not count.
 
 ### Features
 
@@ -328,7 +340,7 @@ Simple single-agent use: just call `python_exec()` — the default kernel auto-s
 - **Package installation**: Use `python_reset` with `packages` parameter to install dependencies
 - **Timeout handling**: Long-running code times out gracefully (session preserved)
 - **Interrupt support**: Stop runaway code without losing session state
-- **Multi-kernel**: Each `python_reset()` creates an isolated kernel for parallel agents
+- **Multi-kernel**: `python_reset(kernel_id=...)` creates a separate named kernel for parallel agents
 
 ### Usage Tips
 

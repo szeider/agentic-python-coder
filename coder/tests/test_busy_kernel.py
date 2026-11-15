@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import time
+import uuid
 from queue import Empty
 
 import pytest
@@ -75,8 +76,10 @@ async def timed(name, args):
 
 
 async def new_kernel():
-    """A fresh, warmed kernel; returns its id."""
-    kid = (await call("python_reset", {}))["kernel_id"]
+    """A fresh, warmed named kernel; returns its id."""
+    kid = (await call("python_reset", {"kernel_id": f"busy-{uuid.uuid4().hex[:8]}"}))[
+        "kernel_id"
+    ]
     data = await call("python_exec", {"kernel_id": kid, "code": "1", "timeout": 30})
     assert data["success"] is True, data
     return kid
@@ -207,6 +210,7 @@ async def test_t4_idle_status_unchanged():
         "packages_total",
         "variables",
         "kernel_busy",
+        "crashed",
     }
     assert status["kernel_busy"] is False
     assert status["python_version"] and status["packages"], status
@@ -222,6 +226,7 @@ async def test_idle_reset_reply_unchanged():
         "success": True,
         "kernel_id": kid,
         "message": "Session started (no packages)",
+        "created": False,
     }
 
 

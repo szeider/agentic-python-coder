@@ -32,9 +32,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Resource limits
+# Resource limits. MAX_KERNELS counts kernels other than the default one,
+# slots in creation included; the default kernel is never refused.
 MAX_KERNELS = int(os.environ.get("CODER_MAX_KERNELS", "10"))
 DEFAULT_KERNEL_ID = "_default"
+
+# Explicit kernel ids other than DEFAULT_KERNEL_ID
+_KERNEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+
+
+class _KernelLimitError(RuntimeError):
+    """MAX_KERNELS reached; named holds the ids that count against it."""
+
+    def __init__(self, message: str, named: List[str], limit: int):
+        super().__init__(message)
+        self.named = named
+        self.limit = limit
 
 
 @dataclass
@@ -780,7 +793,9 @@ def create_kernel(
     """Create a new kernel and return its ID.
 
     Args:
-        kernel_id: Optional explicit ID (8 hex chars). Auto-generated if None.
+        kernel_id: Optional explicit ID: DEFAULT_KERNEL_ID, or 1-64 letters,
+            digits, "_", "-", "." starting with a letter or digit.
+            Auto-generated (8 hex chars) if None.
         with_packages: Packages to install via UV.
         cwd: Working directory for kernel.
 
@@ -789,12 +804,17 @@ def create_kernel(
 
     Raises:
         ValueError: If kernel_id already exists or invalid format.
-        RuntimeError: If kernel fails to start or MAX_KERNELS exceeded.
+        RuntimeError: If kernel fails to start or MAX_KERNELS exceeded (the
+            default kernel does not count and is never refused).
     """
     with _kernels_lock:
-        # Check resource limit
-        if len(_kernels) >= MAX_KERNELS:
-            raise RuntimeError(f"Maximum {MAX_KERNELS} kernels exceeded")
+        # Check resource limit (named kernels only)
+        if kernel_id != DEFAULT_KERNEL_ID:
+            named = [k for k in _kernels if k != DEFAULT_KERNEL_ID]
+            if len(named) >= MAX_KERNELS:
+                raise _KernelLimitError(
+                    f"Maximum {MAX_KERNELS} kernels exceeded", named, MAX_KERNELS
+                )
 
         # Generate or validate ID
         if kernel_id is None:
@@ -802,9 +822,8 @@ def create_kernel(
             while kernel_id in _kernels:  # Handle unlikely collision
                 kernel_id = uuid.uuid4().hex[:8]
         else:
-            # Allow DEFAULT_KERNEL_ID or 8-char hex
             if kernel_id != DEFAULT_KERNEL_ID:
-                if not re.match(r"^[0-9a-f]{8}$", kernel_id):
+                if not _KERNEL_ID_RE.fullmatch(kernel_id):
                     raise ValueError(f"Invalid kernel_id format: {kernel_id}")
             if kernel_id in _kernels:
                 raise ValueError(f"Kernel {kernel_id} already exists")
@@ -864,11 +883,12 @@ def execute_in_kernel(
 
 
 def _execute_bounded_in_kernel(
-    kernel_id: str, code: str, timeout: float
+    kernel_id: str, code: str, timeout: float, crash_error: Optional[str] = None
 ) -> Dict[str, Any]:
     """execute_in_kernel for the MCP server (see PythonKernel._execute_bounded).
 
-    The result also carries "_outcome".
+    The result also carries "_outcome". crash_error replaces the error text
+    used when the kernel crashed during execution.
     """
     with _kernels_lock:
         if kernel_id not in _kernels:
@@ -876,10 +896,14 @@ def _execute_bounded_in_kernel(
         state = _kernels[kernel_id]
         if state is None:
             raise KeyError(f"Kernel {kernel_id} is being created")
-    return _execute_by_id(kernel_id, state, lambda k: k._execute_bounded(code, timeout))
+    return _execute_by_id(
+        kernel_id, state, lambda k: k._execute_bounded(code, timeout), crash_error
+    )
 
 
-def _execute_by_id(kernel_id: str, state: KernelState, run) -> Dict[str, Any]:
+def _execute_by_id(
+    kernel_id: str, state: KernelState, run, crash_error: Optional[str] = None
+) -> Dict[str, Any]:
     """Run run(kernel) on a registered kernel, retiring it if it died."""
     # Check if alive before execution
     if not state.kernel._alive():
@@ -894,7 +918,7 @@ def _execute_by_id(kernel_id: str, state: KernelState, run) -> Dict[str, Any]:
     # Check if crashed during execution (or retired by another caller)
     if not state.kernel._alive():
         _retire_dead_kernel(kernel_id, state)
-        result["error"] = (
+        result["error"] = crash_error or (
             f"Kernel {kernel_id} crashed during execution."
             " Call python_reset to restart it."
         )
@@ -959,6 +983,32 @@ def _kernel_busy(kernel_id: str) -> bool:
         kernel._exec_lock.release()
 
 
+def _crash_record(kernel_id: str) -> Optional[_CrashRecord]:
+    """The crash record of a kernel that is not registered, or None."""
+    with _kernels_lock:
+        if kernel_id in _kernels:
+            return None
+        return _crashed.get(kernel_id)
+
+
+def _kernel_known(kernel_id: str) -> bool:
+    """True if the id is registered (slots in creation included) or has a
+    crash record."""
+    with _kernels_lock:
+        return kernel_id in _kernels or kernel_id in _crashed
+
+
+def _retire_if_dead(kernel_id: str) -> None:
+    """Retire a registered kernel whose process died (it gets a crash record).
+
+    Slots in creation and unknown ids are left alone.
+    """
+    with _kernels_lock:
+        state = _kernels.get(kernel_id)
+    if state is not None and not state.kernel._alive():
+        _retire_dead_kernel(kernel_id, state)
+
+
 def shutdown_kernel_by_id(kernel_id: str) -> bool:
     """Shutdown specific kernel.
 
@@ -1018,40 +1068,44 @@ def restart_kernel(
         with_packages: New packages (None = keep existing).
 
     A kernel that died (and was dropped from the registry) is restarted
-    with the packages and cwd it had.
+    with the packages and cwd it had. If the new kernel fails to start, the
+    ID is left with a crash record holding the old packages and cwd, so a
+    later restart_kernel(kernel_id) can bring it back.
 
     Raises:
         KeyError: If kernel not found.
         RuntimeError: If new kernel fails to start.
     """
+    # Choose the live or the crashed path and reserve the slot in one
+    # critical section: a concurrent retirement cannot slip in between
     with _kernels_lock:
         _replaced_busy.discard(kernel_id)
-        crashed = None if kernel_id in _kernels else _crashed.get(kernel_id)
+        crashed = None
+        if kernel_id in _kernels:
+            state = _kernels[kernel_id]
+            if state is None:
+                raise KeyError(f"Kernel {kernel_id} is being created")
+            # Mark as restarting
+            _kernels[kernel_id] = None
+        else:
+            crashed = _crashed.get(kernel_id)
+            if crashed is None:
+                raise KeyError(f"Unknown kernel: {kernel_id}")
     if crashed is not None:
         packages = with_packages if with_packages is not None else crashed.packages
         create_kernel(kernel_id, packages, crashed.cwd)
         logger.info(f"Restarted crashed kernel {kernel_id}")
         return
 
-    with _kernels_lock:
-        if kernel_id not in _kernels:
-            raise KeyError(f"Unknown kernel: {kernel_id}")
-        state = _kernels[kernel_id]
-        if state is None:
-            raise KeyError(f"Kernel {kernel_id} is being created")
-        old_packages = state.packages
-        old_cwd = state.cwd
-        # Mark as restarting
-        _kernels[kernel_id] = None
-
-    # Shutdown old kernel (a busy one is killed without waiting for its code)
-    if _shutdown_replaced(kernel_id, state.kernel):
-        with _kernels_lock:
-            _replaced_busy.add(kernel_id)
-
-    # Create new kernel with same ID
+    old_packages = state.packages
+    old_cwd = state.cwd
     packages = with_packages if with_packages is not None else old_packages
     try:
+        # Shutdown old kernel (a busy one is killed without waiting for its
+        # code), then create the new kernel with the same ID
+        if _shutdown_replaced(kernel_id, state.kernel):
+            with _kernels_lock:
+                _replaced_busy.add(kernel_id)
         kernel = PythonKernel(cwd=old_cwd, with_packages=packages)
         with _kernels_lock:
             _kernels[kernel_id] = KernelState(
@@ -1061,9 +1115,12 @@ def restart_kernel(
             )
         logger.info(f"Restarted kernel {kernel_id}")
     except Exception:
-        # Remove from registry on failure
+        # Remove from registry on failure, keeping the old configuration;
+        # the old process must not survive a failed shutdown
+        _kill_process_group(state.kernel)
         with _kernels_lock:
             _kernels.pop(kernel_id, None)
+            _crashed[kernel_id] = _CrashRecord(list(old_packages), old_cwd)
         raise
 
 

@@ -11,7 +11,7 @@ import os
 import re
 import signal
 import threading
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import jsonschema
 from mcp.server import Server
@@ -20,11 +20,16 @@ from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 from packaging.requirements import InvalidRequirement, Requirement
 
 from agentic_python_coder.kernel import (
+    _KERNEL_ID_RE,
     DEFAULT_KERNEL_ID,
     INTERRUPT_GRACE,
+    _crash_record,
     _execute_bounded_in_kernel,
     _kernel_busy,
+    _kernel_known,
+    _KernelLimitError,
     _pop_replaced_busy,
+    _retire_if_dead,
     create_kernel,
     get_kernel_info,
     interrupt_kernel_by_id,
@@ -50,8 +55,116 @@ STATUS_PROBE_TIMEOUT = 10  # Timeout for python_status introspection probes
 # guards against a worker that never returns
 BACKSTOP_SLACK = 10
 
-# Async lock for session operations (default kernel management)
-_session_lock = asyncio.Lock()
+# One asyncio lock per kernel id: python_reset holds it for the whole call,
+# python_exec for its existence check and auto-start only. Locks belong to
+# the event loop that created them (tests run one loop per test).
+_kernel_locks: Dict[str, asyncio.Lock] = {}
+_kernel_locks_loop: Optional[asyncio.AbstractEventLoop] = None
+
+# Ids python_reset refuses to create (compared case-insensitively), besides
+# every id starting with "_" other than DEFAULT_KERNEL_ID
+_RESERVED_IDS = ("default", "new", "none", "null")
+
+
+def _kernel_lock(kernel_id: str) -> asyncio.Lock:
+    global _kernel_locks_loop
+    loop = asyncio.get_running_loop()
+    if loop is not _kernel_locks_loop:
+        _kernel_locks.clear()
+        _kernel_locks_loop = loop
+    return _kernel_locks.setdefault(kernel_id, asyncio.Lock())
+
+
+def _has_lock(kernel_id: str) -> bool:
+    """True if a lock exists for the id (a reset of it was handled)."""
+    return (
+        _kernel_locks_loop is asyncio.get_running_loop() and kernel_id in _kernel_locks
+    )
+
+
+# Inner tasks of _locked, kept referenced until they finish
+_locked_tasks: set = set()
+
+
+async def _locked(kernel_id: str, work):
+    """Await work() while holding the kernel id's lock.
+
+    The lock is taken here, in call order, and released by an inner task
+    when work() has settled. A cancelled caller gets CancelledError at once,
+    but the lock stays held until the worker thread is done, so the next
+    call does not find a half-made kernel.
+    """
+    lock = _kernel_lock(kernel_id)
+    await lock.acquire()
+
+    async def inner():
+        try:
+            return await work()
+        finally:
+            lock.release()
+
+    task = asyncio.ensure_future(inner())
+    _locked_tasks.add(task)
+    # Retrieve the result so an abandoned task logs no "never retrieved"
+    task.add_done_callback(
+        lambda t: _locked_tasks.discard(t) or t.cancelled() or t.exception()
+    )
+    return await asyncio.shield(task)
+
+
+def _live_ids() -> List[str]:
+    """Ids of registered kernels whose process is alive."""
+    return [k["id"] for k in list_kernels() if k["alive"]]
+
+
+def _kernel_id_error(kernel_id: str) -> Optional[str]:
+    """Why python_reset may not create a kernel with this id, or None."""
+    if kernel_id == DEFAULT_KERNEL_ID:
+        return None
+    if kernel_id.lower() in _RESERVED_IDS or kernel_id.startswith("_"):
+        return (
+            f'kernel_id "{kernel_id}" is reserved; omit kernel_id for the'
+            " default kernel."
+        )
+    if not _KERNEL_ID_RE.fullmatch(kernel_id):
+        return (
+            f'Invalid kernel_id "{kernel_id}": use 1 to 64 letters, digits,'
+            ' "_", "-" or ".", starting with a letter or digit; omit kernel_id'
+            " for the default kernel."
+        )
+    return None
+
+
+def _known(kernel_id: str) -> bool:
+    """True if the id has a registered kernel (or slot) or a crash record."""
+    return _kernel_known(kernel_id)
+
+
+def _not_found_error(kernel_id: str) -> str:
+    live = json.dumps(_live_ids())
+    return (
+        f'Kernel "{kernel_id}" not found. Live kernels: {live}.'
+        f' python_reset(kernel_id="{kernel_id}") creates it; omit kernel_id for'
+        " the default kernel."
+    )
+
+
+def _crashed_error(kernel_id: str) -> str:
+    return (
+        f'Kernel "{kernel_id}" crashed, its state is lost.'
+        f' python_reset(kernel_id="{kernel_id}") restarts it with its packages.'
+    )
+
+
+def _restart_hint(kernel_id: str) -> str:
+    """How a client gets a crashed kernel back."""
+    if kernel_id == DEFAULT_KERNEL_ID:
+        return (
+            "The next python_exec restarts it with the same packages; that call is"
+            " not executed and must be sent again. python_reset() restarts it as"
+            " well."
+        )
+    return f'Call python_reset(kernel_id="{kernel_id}") to restart it.'
 
 
 def truncate_output(result: dict) -> dict:
@@ -195,8 +308,8 @@ def _exec_reply(raw: dict, timeout: float, kernel_id: str) -> dict:
             return {
                 "success": False,
                 "kernel_id": kernel_id,
-                "error": f"Execution timed out after {limit}. Session crashed"
-                " - call python_reset to restart.",
+                "error": f"Execution timed out after {limit}. Session crashed."
+                f" {_restart_hint(kernel_id)}",
             }
         if outcome == "stopped":
             error = (
@@ -229,37 +342,96 @@ def _exec_reply(raw: dict, timeout: float, kernel_id: str) -> dict:
 async def execute_with_timeout(
     code: str, timeout: float = DEFAULT_TIMEOUT, kernel_id: str = DEFAULT_KERNEL_ID
 ) -> dict:
-    """Execute code with proper kernel-level timeout and interruption."""
-    loop = asyncio.get_running_loop()
+    """Execute code with proper kernel-level timeout and interruption.
 
-    # Auto-create default kernel with lock to prevent race conditions
-    if kernel_id == DEFAULT_KERNEL_ID:
-        async with _session_lock:
-            if not kernel_exists(kernel_id):
-                try:
-                    await loop.run_in_executor(None, lambda: create_kernel(kernel_id))
-                    logger.info(f"Auto-started kernel {kernel_id}")
-                except Exception as e:
-                    return {
-                        "success": False,
-                        "kernel_id": kernel_id,
-                        "error": f"Failed to auto-start session: {str(e)}",
-                    }
-    elif not kernel_exists(kernel_id):
-        # Non-default kernels should already exist (created via python_reset)
+    The default kernel is started when it is not running: bare as on first
+    use (then the code runs), or, after a crash, with its remembered
+    packages, and then the code is not run (the error reply has
+    "kernel_restarted": true and "executed": false). Named kernels are
+    never created here.
+    """
+    # An unknown named id gets no lock (unless a reset of it was handled,
+    # which may still be creating it)
+    if (
+        kernel_id != DEFAULT_KERNEL_ID
+        and not _known(kernel_id)
+        and not _has_lock(kernel_id)
+    ):
         return {
             "success": False,
             "kernel_id": kernel_id,
-            "error": f"Kernel {kernel_id} not found. Create it first with python_reset().",
+            "error": _not_found_error(kernel_id),
         }
 
+    # Held for the existence check and auto-start only: an exec that arrives
+    # during a reset of its kernel runs in the new kernel afterwards
+    error, restarted_with = await _locked(kernel_id, lambda: _ensure_kernel(kernel_id))
+    if error is not None:
+        return {"success": False, "kernel_id": kernel_id, "error": error}
+
+    if restarted_with is not None:
+        # The code was meant for the lost state: it is not run
+        return {
+            "success": False,
+            "kernel_id": kernel_id,
+            "error": "The default kernel had crashed and was started again with"
+            f" packages [{', '.join(restarted_with)}]. Earlier variables, imports"
+            " and definitions are gone. This code was not executed; send it again.",
+            "executed": False,
+            "kernel_restarted": True,
+            "kernel_busy": False,
+            "timed_out": False,
+        }
+    if code.strip():
+        return await _execute_existing(code, timeout, kernel_id)
+    return {"success": True, "kernel_id": kernel_id, "stdout": "", "result": None}
+
+
+async def _ensure_kernel(kernel_id: str):
+    """python_exec's management step; the caller holds the id's lock.
+
+    Returns (error, restarted_with): an error text when the kernel cannot
+    be used, and the packages of a crashed default kernel restarted here.
+    """
+    loop = asyncio.get_running_loop()
+    if kernel_exists(kernel_id):
+        # A process that died while idle gets its crash record now
+        await loop.run_in_executor(None, lambda: _retire_if_dead(kernel_id))
+    if kernel_exists(kernel_id):
+        return None, None
+    record = _crash_record(kernel_id)
+    if kernel_id != DEFAULT_KERNEL_ID:
+        if record is None:
+            return _not_found_error(kernel_id), None
+        return _crashed_error(kernel_id), None
+    try:
+        if record is None:
+            await loop.run_in_executor(None, lambda: create_kernel(kernel_id))
+            logger.info(f"Auto-started kernel {kernel_id}")
+            return None, None
+        await loop.run_in_executor(None, lambda: restart_kernel(kernel_id))
+        logger.info(f"Restarted crashed kernel {kernel_id}")
+        return None, list(record.packages)
+    except Exception as e:
+        return f"Failed to auto-start session: {str(e)}", None
+
+
+async def _execute_existing(code: str, timeout: float, kernel_id: str) -> dict:
+    """Run code in a registered kernel; the reply of python_exec."""
+    loop = asyncio.get_running_loop()
+    crash_error = (
+        f'Kernel "{kernel_id}" crashed during execution, its state is lost.'
+        f" {_restart_hint(kernel_id)}"
+    )
     try:
         # The worker waits `timeout` (lock wait included), interrupts, waits
         # INTERRUPT_GRACE for the kernel to go idle and decides the outcome
         raw_result = await asyncio.wait_for(
             loop.run_in_executor(
                 None,
-                lambda: _execute_bounded_in_kernel(kernel_id, code, timeout),
+                lambda: _execute_bounded_in_kernel(
+                    kernel_id, code, timeout, crash_error
+                ),
             ),
             timeout=timeout + INTERRUPT_GRACE + BACKSTOP_SLACK,
         )
@@ -286,9 +458,9 @@ async def execute_with_timeout(
         # Kernel crash or other error
         error_str = str(e)
         if "Invalid Signature" in error_str or "signature" in error_str.lower():
-            error_msg = "Session crashed (kernel died). Call python_reset to restart."
+            error_msg = f"Session crashed (kernel died). {_restart_hint(kernel_id)}"
         else:
-            error_msg = f"Session crashed: {error_str}. Call python_reset to restart."
+            error_msg = f"Session crashed: {error_str}. {_restart_hint(kernel_id)}"
         return {"success": False, "kernel_id": kernel_id, "error": error_msg}
 
 
@@ -307,11 +479,11 @@ Output fields:
 - result: final expression value (like REPL output)
 - stdout: print() output
 - error: error message if failed
-- kernel_id: which kernel was used
+- kernel_id: the kernel that ran the code ("_default" unless you passed one)
 
 Tips:
 - First import of large packages (numpy, pandas): use timeout=60
-- If session crashes, call python_reset to restart
+- All calls without kernel_id run in one default kernel, which starts by itself on first use. If it crashed, the next call restarts it with the same packages and is NOT executed; that reply has "kernel_restarted": true and "executed": false, earlier variables and imports are gone, and you send your code again.
 - Session survives most timeouts (code interrupted, state preserved)
 - Use python_status to check session state and defined variables""",
             inputSchema={
@@ -328,7 +500,7 @@ Tips:
                     },
                     "kernel_id": {
                         "type": "string",
-                        "description": "Target kernel ID (from python_reset). Omit for default kernel.",
+                        "description": "Omit (normal case) to run in the default kernel. Pass an id only if you created a separate kernel with python_reset(kernel_id=...). An unknown id is an error; python_exec does not create named kernels.",
                     },
                 },
                 "required": ["code"],
@@ -336,34 +508,34 @@ Tips:
         ),
         Tool(
             name="python_reset",
-            description="""Create a new kernel OR reset an existing one.
+            description="""Restart the Python session with a clean state, optionally with packages.
 
-Two modes:
-- WITHOUT kernel_id: Creates NEW isolated kernel, returns kernel_id
-- WITH kernel_id: Resets that kernel (clears state, optionally installs packages)
+Without kernel_id (normal case): restarts the default kernel, the one python_exec, python_status and python_interrupt use when kernel_id is omitted. It is started if it is not running. Variables, imports and definitions are gone afterwards.
 
-For parallel agents: each agent calls python_reset() once to get its own kernel_id,
-then uses that ID for all python_exec calls.
+With kernel_id: restarts that kernel, or creates it if no kernel has this id (the reply then has "created": true). Use this only for a second session separate from the default one. You choose the id (letters, digits, "_", "-", ".", for example "plots-7f3") and must pass the same kernel_id on every later python_exec, python_status and python_interrupt call.
 
-Note: Kernel IDs are auto-generated 8-char hex strings (e.g., "a94a7c7a").
-You cannot specify custom IDs - the system assigns them.
+Every caller of this server that omits kernel_id works in the same default kernel; in some hosts that includes other chats or subagents. If your state must stay untouched by them, use your own kernel_id on every call.
 
 Example workflow:
-1. python_reset(packages=["numpy"]) -> {"kernel_id": "a94a7c7a"}
-2. python_exec(kernel_id="a94a7c7a", code="import numpy as np")
-3. python_exec(kernel_id="a94a7c7a", code="np.random.rand(3)")""",
+1. python_reset(packages=["numpy"]) -> {"kernel_id": "_default", ...}
+2. python_exec(code="import numpy as np")   (no kernel_id)
+3. python_exec(code="np.random.rand(3)")
+
+Separate kernel:
+1. python_reset(kernel_id="plots-7f3", packages=["matplotlib"]) -> {"kernel_id": "plots-7f3", "created": true, ...}
+2. python_exec(kernel_id="plots-7f3", code="import matplotlib")""",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "packages": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "PyPI packages to install (e.g., ['numpy', 'pandas']). Uses UV for fast installation.",
+                        "description": "PyPI packages to install (e.g., ['numpy', 'pandas']). Uses UV for fast installation. The complete list for this kernel; it replaces the previous list. Omitted or empty: the kernel keeps its current packages.",
                         "default": [],
                     },
                     "kernel_id": {
                         "type": "string",
-                        "description": "If provided: reset this kernel. If omitted: create NEW kernel.",
+                        "description": "Omit for the default kernel (normal case). Give an id to restart that kernel or, if no kernel has this id, to create a separate one.",
                     },
                 },
             },
@@ -375,6 +547,7 @@ Example workflow:
 Use to:
 - See if a session is active
 - List all active kernel IDs (all_kernels field)
+- See whether the kernel crashed (crashed field)
 - Check what variables are defined
 - Verify installed packages
 - Get Python version info
@@ -426,7 +599,7 @@ Use when:
 - You want to stop a computation early
 - A loop seems stuck
 
-Note: Call this, then call python_exec to continue working.""",
+Note: Call this, then continue with python_exec using the same kernel_id (omit kernel_id for the default kernel).""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -440,87 +613,121 @@ Note: Call this, then call python_exec to continue working.""",
     ]
 
 
+async def _reset(kernel_id: str, packages: List[str]) -> dict:
+    """python_reset's work; the caller holds the kernel id's lock.
+
+    Restarts the id if it is live or has a crash record, otherwise creates
+    it. Returns the success reply; raises when the kernel cannot start.
+    """
+    loop = asyncio.get_running_loop()
+    created = not _known(kernel_id)
+    replaced_busy = False
+    if created:
+        await loop.run_in_executor(
+            None, lambda: create_kernel(kernel_id, packages or None)
+        )
+    else:
+        # Also brings back a kernel that crashed, with its packages and cwd
+        await loop.run_in_executor(
+            None, lambda: restart_kernel(kernel_id, packages or None)
+        )
+        replaced_busy = _pop_replaced_busy(kernel_id)
+        # Without packages the kernel keeps the ones it had: report what it
+        # actually runs with
+        if not packages:
+            try:
+                packages = list(get_kernel_info(kernel_id)["packages"] or [])
+            except KeyError:
+                pass
+
+    if packages:
+        msg = f"Session started with packages: {', '.join(packages)}"
+        # Same probe discipline as python_status: no names bound, no
+        # history entry, _ untouched
+        try:
+            probe = _package_versions_probe(packages)
+            results = await loop.run_in_executor(
+                None,
+                lambda: probe_kernel(kernel_id, [probe], DEFAULT_TIMEOUT),
+            )
+            result = results[0] if results else None
+            if result and result.get("error") is None and result.get("stdout"):
+                versions = ast.literal_eval(result["stdout"].strip())
+                if isinstance(versions, dict):
+                    pkg_list = ", ".join(f"{p} {v}" for p, v in versions.items())
+                    msg = f"Session started. Packages: {pkg_list}"
+        except Exception:
+            pass
+    else:
+        msg = "Session started (no packages)"
+
+    reply = {"success": True, "kernel_id": kernel_id, "message": msg}
+    if replaced_busy:
+        if not msg.endswith("."):
+            reply["message"] += "."
+        reply["message"] += (
+            " The previous kernel was still running code and was terminated."
+        )
+        reply["replaced_busy_kernel"] = True
+    reply["created"] = created
+    if created and kernel_id != DEFAULT_KERNEL_ID:
+        if not reply["message"].endswith("."):
+            reply["message"] += "."
+        reply["message"] += (
+            f' Created kernel "{kernel_id}". Pass kernel_id="{kernel_id}" on'
+            " every python_exec, python_status and python_interrupt call;"
+            " calls without kernel_id use the default kernel."
+        )
+    return reply
+
+
 async def call_tool(name: str, arguments: dict):
     """Handle tool calls."""
     loop = asyncio.get_running_loop()
 
     if name == "python_reset":
-        kernel_id = arguments.get("kernel_id")  # None means create new kernel
-        packages = arguments.get("packages", [])
-        replaced_busy = False
+        # Omitted, null and "" mean the default kernel
+        kernel_id = arguments.get("kernel_id") or DEFAULT_KERNEL_ID
+        # A non-empty list replaces the kernel's packages; omitted, null and
+        # [] keep them (a new kernel has none)
+        packages = arguments.get("packages") or []
 
-        try:
-            if kernel_id is None:
-                # No kernel_id provided: CREATE NEW kernel
-                kernel_id = await loop.run_in_executor(
-                    None,
-                    lambda: create_kernel(None, packages if packages else None),
-                )
-            else:
-                # kernel_id provided: RESET it (also brings back a kernel
-                # that crashed, with its packages and cwd)
-                try:
-                    await loop.run_in_executor(
-                        None,
-                        lambda: restart_kernel(
-                            kernel_id, packages if packages else None
+        if not _known(kernel_id):
+            id_error = _kernel_id_error(kernel_id)
+            if id_error:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "success": False,
+                                "kernel_id": kernel_id,
+                                "error": id_error,
+                            }
                         ),
                     )
-                    replaced_busy = _pop_replaced_busy(kernel_id)
-                except KeyError:
-                    # kernel_id provided but doesn't exist: error
-                    return [
-                        TextContent(
-                            type="text",
-                            text=json.dumps(
-                                {
-                                    "success": False,
-                                    "error": f"Kernel {kernel_id} not found. Omit kernel_id to create a new kernel.",
-                                }
-                            ),
-                        )
-                    ]
-                # Without packages the kernel keeps the ones it had: report
-                # what it actually runs with
-                if not packages:
-                    try:
-                        packages = list(get_kernel_info(kernel_id)["packages"] or [])
-                    except KeyError:
-                        pass
+                ]
 
-            if packages:
-                msg = f"Session started with packages: {', '.join(packages)}"
-                # Same probe discipline as python_status: no names bound, no
-                # history entry, _ untouched
-                try:
-                    probe = _package_versions_probe(packages)
-                    results = await loop.run_in_executor(
-                        None,
-                        lambda: probe_kernel(kernel_id, [probe], DEFAULT_TIMEOUT),
-                    )
-                    result = results[0] if results else None
-                    if result and result.get("error") is None and result.get("stdout"):
-                        versions = ast.literal_eval(result["stdout"].strip())
-                        if isinstance(versions, dict):
-                            pkg_list = ", ".join(
-                                f"{p} {v}" for p, v in versions.items()
-                            )
-                            msg = f"Session started. Packages: {pkg_list}"
-                except Exception:
-                    pass
-            else:
-                msg = "Session started (no packages)"
-
-            reply = {"success": True, "kernel_id": kernel_id, "message": msg}
-            if replaced_busy:
-                if not msg.endswith("."):
-                    reply["message"] += "."
-                reply["message"] += (
-                    " The previous kernel was still running code and was terminated."
-                )
-                reply["replaced_busy_kernel"] = True
+        try:
+            reply = await _locked(kernel_id, lambda: _reset(kernel_id, packages))
             logger.info(reply["message"])
             return [TextContent(type="text", text=json.dumps(reply))]
+        except _KernelLimitError as e:
+            live = set(_live_ids())
+            error = (
+                f"Maximum of {e.limit} named kernels reached."
+                f" Live: {', '.join(k for k in e.named if k in live)}."
+                " python_reset(kernel_id=<one of these>) reuses that kernel and"
+                " discards its state; omit kernel_id for the default kernel."
+            )
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {"success": False, "kernel_id": kernel_id, "error": error}
+                    ),
+                )
+            ]
         except Exception as e:
             return [
                 TextContent(
@@ -550,21 +757,7 @@ async def call_tool(name: str, arguments: dict):
             timeout = DEFAULT_TIMEOUT
         kernel_id = get_kernel_id(arguments)
 
-        if not code.strip():
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {
-                            "success": True,
-                            "kernel_id": kernel_id,
-                            "stdout": "",
-                            "result": None,
-                        }
-                    ),
-                )
-            ]
-
+        # Empty code goes through the same kernel handling, then is a no-op
         result = await execute_with_timeout(code, timeout, kernel_id)
         return [TextContent(type="text", text=json.dumps(result))]
 
@@ -590,9 +783,8 @@ async def call_tool(name: str, arguments: dict):
         kernel_id = get_kernel_id(arguments)
         is_active = kernel_exists(kernel_id)
 
-        # Get all active kernel IDs
-        all_kernel_info = list_kernels()
-        all_kernel_ids = [k["id"] for k in all_kernel_info]
+        # Get all active kernel IDs (processes alive)
+        all_kernel_ids = _live_ids()
 
         status = {
             "kernel_id": kernel_id,
@@ -603,6 +795,7 @@ async def call_tool(name: str, arguments: dict):
             "packages_total": None,
             "variables": [],
             "kernel_busy": False,
+            "crashed": False,
         }
 
         if is_active:
@@ -645,35 +838,59 @@ async def call_tool(name: str, arguments: dict):
             # kernel that is not in the registry
             if not kernel_exists(kernel_id):
                 status["active"] = False
-                status["all_kernels"] = [k["id"] for k in list_kernels()]
+                status["all_kernels"] = _live_ids()
             else:
                 # A call in flight or abandoned code still running
                 status["kernel_busy"] = await loop.run_in_executor(
                     None, lambda: _kernel_busy(kernel_id)
                 )
 
+        status["crashed"] = _crash_record(kernel_id) is not None
         return [TextContent(type="text", text=json.dumps(status))]
 
     elif name == "python_interrupt":
         kernel_id = get_kernel_id(arguments)
 
-        if not kernel_exists(kernel_id):
+        def absent_error() -> str:
+            """Error for an id without a registered kernel."""
+            if _crash_record(kernel_id) is not None:
+                if kernel_id == DEFAULT_KERNEL_ID:
+                    return (
+                        f'Kernel "{kernel_id}" crashed, its state is lost.'
+                        f" {_restart_hint(kernel_id)}"
+                    )
+                return _crashed_error(kernel_id)
+            if kernel_id == DEFAULT_KERNEL_ID:
+                return "No active session to interrupt"
+            return _not_found_error(kernel_id)
+
+        def error_reply(error: str):
             return [
                 TextContent(
                     type="text",
                     text=json.dumps(
-                        {
-                            "success": False,
-                            "kernel_id": kernel_id,
-                            "error": "No active session to interrupt",
-                        }
+                        {"success": False, "kernel_id": kernel_id, "error": error}
                     ),
                 )
             ]
 
+        # A process that died while idle gets its crash record now
+        if kernel_exists(kernel_id):
+            await loop.run_in_executor(None, lambda: _retire_if_dead(kernel_id))
+        if not kernel_exists(kernel_id):
+            return error_reply(absent_error())
+
         try:
             # interrupt_kernel_by_id already includes grace period sleep
-            await loop.run_in_executor(None, lambda: interrupt_kernel_by_id(kernel_id))
+            sent = await loop.run_in_executor(
+                None, lambda: interrupt_kernel_by_id(kernel_id)
+            )
+            if not sent:
+                # Died or replaced in the meantime
+                await loop.run_in_executor(None, lambda: _retire_if_dead(kernel_id))
+                if not kernel_exists(kernel_id):
+                    return error_reply(absent_error())
+                return error_reply("Failed to interrupt: the kernel is not running.")
 
             return [
                 TextContent(
@@ -696,7 +913,8 @@ async def call_tool(name: str, arguments: dict):
                         {
                             "success": False,
                             "kernel_id": kernel_id,
-                            "error": "Session crashed during interrupt. Call python_reset to restart.",
+                            "error": "Session crashed during interrupt."
+                            f" {_restart_hint(kernel_id)}",
                         }
                     ),
                 )

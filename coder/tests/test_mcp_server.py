@@ -98,12 +98,13 @@ class TestPythonReset:
         assert "NameError" in data["error"]
 
     @pytest.mark.asyncio
-    async def test_reset_nonexistent_kernel_fails(self):
-        """python_reset with non-existent kernel_id fails."""
+    async def test_reset_unknown_kernel_id_creates_it(self):
+        """python_reset with an unknown kernel_id creates that kernel (4.0)."""
         result = await call_tool("python_reset", {"kernel_id": "nonexist"})
         data = json.loads(result[0].text)
-        assert data["success"] is False
-        assert "not found" in data["error"].lower()
+        assert data["success"] is True, data
+        assert data["kernel_id"] == "nonexist"
+        assert data["created"] is True
 
 
 class TestPythonStatus:
@@ -361,14 +362,13 @@ class TestMultiKernel:
     """Tests for multi-kernel functionality via python_reset."""
 
     @pytest.mark.asyncio
-    async def test_reset_creates_kernel_with_id(self):
-        """python_reset without kernel_id creates new kernel with ID."""
+    async def test_reset_without_id_targets_default_kernel(self):
+        """python_reset without kernel_id starts the default kernel (4.0)."""
         result = await call_tool("python_reset", {})
         data = json.loads(result[0].text)
 
         assert data["success"] is True
-        assert "kernel_id" in data
-        assert len(data["kernel_id"]) == 8  # 8-char hex
+        assert data["kernel_id"] == "_default"
 
     @pytest.mark.asyncio
     async def test_exec_with_kernel_id(self):
@@ -391,9 +391,9 @@ class TestMultiKernel:
     @pytest.mark.asyncio
     async def test_kernels_have_isolated_state(self):
         """Different kernels have isolated state."""
-        # Create two kernels via python_reset
-        r1 = await call_tool("python_reset", {})
-        r2 = await call_tool("python_reset", {})
+        # Create two kernels via python_reset (named: 4.0)
+        r1 = await call_tool("python_reset", {"kernel_id": "iso-1"})
+        r2 = await call_tool("python_reset", {"kernel_id": "iso-2"})
         kernel1 = json.loads(r1[0].text)["kernel_id"]
         kernel2 = json.loads(r2[0].text)["kernel_id"]
 
@@ -501,6 +501,7 @@ class TestStatusSideEffects:
             "packages_total",
             "variables",
             "kernel_busy",
+            "crashed",
         }
         assert status["active"] is True
         assert elapsed < 2, f"status blocked for {elapsed:.1f}s"
@@ -550,7 +551,7 @@ class TestResetPackageVersions:
         packages = ["ipykernel>=1", "Jupyter_Client", "./local/pkg", "no-such-dist-x"]
         result = await call_tool("python_reset", {"packages": packages})
         data = json.loads(result[0].text)
-        assert set(data) == {"success", "kernel_id", "message"}
+        assert set(data) == {"success", "kernel_id", "message", "created"}
         assert data["success"] is True, data
         ipk = importlib.metadata.version("ipykernel")
         jc = importlib.metadata.version("jupyter-client")
@@ -622,7 +623,7 @@ class TestResetKeepsPackages:
 
         result = await call_tool("python_reset", {"kernel_id": kernel_id})
         data = json.loads(result[0].text)
-        assert set(data) == {"success", "kernel_id", "message"}
+        assert set(data) == {"success", "kernel_id", "message", "created"}
         assert data["success"] is True, data
         assert data["kernel_id"] == kernel_id
         assert get_kernel_info(kernel_id)["packages"] == packages
