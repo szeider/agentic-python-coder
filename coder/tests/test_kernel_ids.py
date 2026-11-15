@@ -827,3 +827,73 @@ async def test_fix8_no_lock_for_unknown_ids():
         out = await call("python_exec", {"kernel_id": f"nope-{i}", "code": "1"})
         assert out["success"] is False, out
     assert not any(k.startswith("nope-") for k in mcp_server._kernel_locks)
+
+
+# Review 3 ------------------------------------------------------------------
+# The startup code imports matplotlib; a module of that name in the kernel's
+# cwd that exits kills the kernel during startup.
+TRAP = "import os; os._exit(23)\n"
+STARTUP_DEATH = "Failed to start kernel: the kernel died while running its startup code"
+
+
+def test_rv3_startup_death_on_create_is_a_start_failure(tmp_path):
+    (tmp_path / "matplotlib.py").write_text(TRAP)
+    with pytest.raises(RuntimeError) as exc:
+        kmod.create_kernel("sd", cwd=str(tmp_path))
+    assert str(exc.value) == STARTUP_DEATH, exc.value
+    assert kmod.list_kernels() == [] and "sd" not in kmod._crashed
+
+
+def test_rv3_startup_error_in_live_kernel_is_tolerated(tmp_path):
+    (tmp_path / "matplotlib.py").write_text("raise ValueError('not matplotlib')\n")
+    kid = kmod.create_kernel(cwd=str(tmp_path))
+    assert kmod.execute_in_kernel(kid, "1 + 1")["result"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_rv3_startup_death_on_reset_keeps_old_packages(tmp_path):
+    kmod.create_kernel("sd", ["six"], cwd=str(tmp_path))
+    (tmp_path / "matplotlib.py").write_text(TRAP)
+    data = await call("python_reset", {"kernel_id": "sd"})
+    assert data["success"] is False and STARTUP_DEATH in data["error"], data
+    assert not kmod.kernel_exists("sd")
+    assert kmod._crashed["sd"].packages == ["six"]
+    assert kmod._crashed["sd"].cwd == str(tmp_path)
+    (tmp_path / "matplotlib.py").unlink()
+    data = await call("python_reset", {"kernel_id": "sd"})
+    assert data["success"] is True and "six" in data["message"], data
+    out = await call("python_exec", {"kernel_id": "sd", "code": "import six; 1"})
+    assert out["success"] is True and out["result"] == "1", out
+
+
+@pytest.mark.asyncio
+async def test_rv3_startup_death_on_rule8_restart(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # the default kernel runs in our cwd
+    out = await call("python_exec", {"code": "1 + 1"})
+    assert out["success"] is True and out["result"] == "2", out
+    (tmp_path / "matplotlib.py").write_text(TRAP)
+    out = await call("python_exec", {"code": "import os; os._exit(1)"})
+    assert out["success"] is False and kmod._crash_record("_default"), out
+    out = await call("python_exec", {"code": "1 + 1"})
+    assert out == {
+        "success": False,
+        "kernel_id": "_default",
+        "error": f"Failed to auto-start session: {STARTUP_DEATH}",
+    }, out
+    assert kmod._crash_record("_default") is not None
+    (tmp_path / "matplotlib.py").unlink()
+    out = await call("python_exec", {"code": "1 + 1"})
+    assert out == restarted(""), out
+
+
+def test_rv3_relative_cwd_with_packages_is_applied_once(tmp_path, monkeypatch):
+    (tmp_path / "proj" / "proj").mkdir(parents=True)
+    (tmp_path / "proj" / "marker.txt").write_text("outer")
+    (tmp_path / "proj" / "proj" / "marker.txt").write_text("inner")
+    monkeypatch.chdir(tmp_path)
+    code = "import os; print(os.getcwd(), open('marker.txt').read())"
+    expected = f"{os.path.realpath(tmp_path / 'proj')} outer\n"
+    for packages in (None, ["six"]):
+        kid = kmod.create_kernel(with_packages=packages, cwd="proj")
+        out = kmod.execute_in_kernel(kid, code)
+        assert out["error"] is None and out["stdout"] == expected, (packages, out)

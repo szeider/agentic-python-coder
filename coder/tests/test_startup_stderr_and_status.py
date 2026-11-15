@@ -134,7 +134,9 @@ def test_other_cause_appends_nothing(monkeypatch):
         kmod.create_kernel(with_packages=[BAD_PATH])
     assert str(exc.value) == DIED
     ((cmd, kwargs),) = calls
-    assert cmd[:2] == ["uv", "run"] and cmd[-3:] == ["python", "-c", "pass"], cmd
+    # The uv that passed the version check, by absolute path
+    assert os.path.isabs(cmd[0]) and os.path.basename(cmd[0]) == "uv", cmd
+    assert cmd[1] == "run" and cmd[-3:] == ["python", "-c", "pass"], cmd
     i = cmd.index(BAD_PATH)
     assert cmd[i - 1 : i + 1] == ["--with", BAD_PATH], cmd
     assert "--no-project" in cmd and "--python" in cmd and "ipykernel" in cmd

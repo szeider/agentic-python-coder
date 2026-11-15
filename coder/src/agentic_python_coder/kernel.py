@@ -139,32 +139,40 @@ _UV_DIAGNOSIS_TAIL = 1500
 # Oldest uv that knows every option of the launch command (--no-env-file)
 UV_MIN_VERSION = "0.4.30"
 
-# Problem text per uv executable path ("" = version fine or unknown)
-_uv_version_checked: Dict[str, str] = {}
+# uv executables whose version passed the check, as (real path, st_mtime_ns,
+# st_size): a replaced or updated executable is checked again
+_uv_version_ok: set = set()
 
 
 def _uv_version_problem(uv: str) -> str:
     """Error text if the uv at path `uv` is older than UV_MIN_VERSION, else "".
 
     An unreadable version gives "" (the launch then reports uv's own error).
+    Only a passed check is cached.
     """
-    if uv not in _uv_version_checked:
-        problem = ""
-        try:
-            out = subprocess.run(
-                [uv, "--version"], capture_output=True, text=True, timeout=10
-            ).stdout
-            found = Version(out.split()[1])
-            if found < Version(UV_MIN_VERSION):
-                problem = (
-                    f"uv {UV_MIN_VERSION} or newer is required for kernels with "
-                    f"packages (found uv {found} at {uv}). Update uv, e.g. with: "
-                    "uv self update"
-                )
-        except Exception:  # OSError, timeout, unexpected output
-            pass
-        _uv_version_checked[uv] = problem
-    return _uv_version_checked[uv]
+    try:
+        st = os.stat(uv)
+        key = (os.path.realpath(uv), st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+    if key is not None and key in _uv_version_ok:
+        return ""
+    try:
+        out = subprocess.run(
+            [uv, "--version"], capture_output=True, text=True, timeout=10
+        ).stdout
+        found = Version(out.split()[1])
+    except Exception:  # OSError, timeout, unexpected output
+        return ""
+    if found < Version(UV_MIN_VERSION):
+        return (
+            f"uv {UV_MIN_VERSION} or newer is required for kernels with "
+            f"packages (found uv {found} at {uv}). Update uv, e.g. with: "
+            "uv self update"
+        )
+    if key is not None:
+        _uv_version_ok.add(key)
+    return ""
 
 
 def _kernel_env_with_packages() -> Dict[str, str]:
@@ -259,6 +267,10 @@ class UVKernelManager(KernelManager):
         self.uv_cwd = cwd
         # uv part of the last launch command, for diagnosing a failed start
         self.uv_prefix: Optional[List[str]] = None
+        # Absolute path of the uv that was checked; the launch and the
+        # diagnosis run this one (a relative PATH entry or a PATH change
+        # would otherwise let them run another)
+        self.uv: Optional[str] = None
 
         # Check UV availability and version
         if self.with_packages:
@@ -268,7 +280,8 @@ class UVKernelManager(KernelManager):
                     "UV is required for dynamic package mode but not found in PATH. "
                     "Install it with: curl -LsSf https://astral.sh/uv/install.sh | sh"
                 )
-            problem = _uv_version_problem(uv)
+            self.uv = os.path.abspath(uv)
+            problem = _uv_version_problem(self.uv)
             if problem:
                 raise RuntimeError(problem)
 
@@ -282,7 +295,7 @@ class UVKernelManager(KernelManager):
             return cmd
 
         # Build the UV wrapper
-        uv_prefix = ["uv", "run"]
+        uv_prefix = [self.uv, "run"]
 
         # Set working directory (critical for file operations)
         if self.uv_cwd:
@@ -347,6 +360,11 @@ class PythonKernel:
         # Request sent but not seen to complete (read and written only
         # while holding _exec_lock). New code is sent only when it is None.
         self._pending: Optional[_Request] = None
+
+        # Absolute once, against our cwd: uv gets it both as its process cwd
+        # and as --directory, and a relative path would be applied twice
+        if cwd:
+            cwd = os.path.abspath(cwd)
 
         # Store configuration for comparison
         self.cwd = cwd
@@ -443,7 +461,16 @@ __coder_startup()
 del __coder_startup
 """
         with self._exec_lock:
-            self._execute_raw(startup_code)
+            output, completed = self._execute_collect(startup_code)
+        # An error in the startup code is tolerated; a kernel that died in it
+        # (e.g. a cwd module named matplotlib that exits) or still runs it is
+        # not a started kernel
+        if not self._alive():
+            raise RuntimeError("the kernel died while running its startup code")
+        if not completed:
+            raise RuntimeError(
+                f"its startup code did not complete: {output['error'] or 'no reply'}"
+            )
 
     def _cleanup_on_error(self):
         """Clean up resources if initialization fails.
