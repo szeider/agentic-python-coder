@@ -1,6 +1,6 @@
 # Changelog
 
-## 4.0.0 (unreleased; release candidate 4.0.0rc1 published 2026-11-15)
+## 4.0.0 (unreleased; release candidates 4.0.0rc1 and 4.0.0rc2 published 2026-11-15)
 
 Kernel server (`ipython_mcp`): new kernel-id semantics. Tool names, parameter names and types, and existing result keys are unchanged; the Python API (`create_kernel`, `restart_kernel`, ...) keeps its signatures, and `create_kernel(None)` still returns an 8-hex id. The agent side (`coder`, `solve_task`) is unchanged except for the package isolation below.
 
