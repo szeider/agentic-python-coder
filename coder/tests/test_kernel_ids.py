@@ -8,6 +8,7 @@ and python_interrupt never create named kernels. Real kernels; the package
 
 import ast
 import asyncio
+import importlib.util
 import inspect
 import json
 import os
@@ -52,6 +53,18 @@ def restarted(packages):
 
 SIGIGN = "import signal, time\nsignal.signal(signal.SIGINT, signal.SIG_IGN)\n"
 STUBBORN = SIGIGN + "while True:\n    time.sleep(0.1)\n"
+
+
+@pytest.fixture(autouse=True, scope="module")
+def six_only_from_packages():
+    """`import six` below proves that a kernel got its packages only if the
+    test environment lacks six: a kernel without packages runs this
+    interpreter, and uv layers --with packages over the active venv."""
+    if importlib.util.find_spec("six") is not None:
+        pytest.fail(
+            "six is installed in the test environment, so the six imports in"
+            " this file would pass without the kernel's packages"
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -173,7 +186,7 @@ async def test_c_named_kernel_created_separate_and_reset():
 
     data = await call("python_reset", {"kernel_id": "work-1"})
     assert data["success"] is True and data["created"] is False, data
-    assert data["message"] == "Session started (no packages)", data
+    assert data["message"] == "Session restarted (no packages)", data
     out = await call("python_exec", {"kernel_id": "work-1", "code": "v"})
     assert out["success"] is False and "NameError" in out["error"], out
     out = await call("python_exec", {"code": "v"})
@@ -293,14 +306,14 @@ async def test_f_packages_rule(plain_launch):
     for packages in ([], None):
         data = await call("python_reset", {"kernel_id": "pk", "packages": packages})
         assert data["success"] is True, data
-        assert data["message"].startswith("Session started. Packages: ipykernel ")
+        assert data["message"].startswith("Session restarted. Packages: ipykernel ")
         assert kmod.get_kernel_info("pk")["packages"] == ["ipykernel"]
     data = await call("python_reset", {"kernel_id": "pk"})
     assert kmod.get_kernel_info("pk")["packages"] == ["ipykernel"]
     data = await call(
         "python_reset", {"kernel_id": "pk", "packages": ["jupyter_client"]}
     )
-    assert data["message"].startswith("Session started. Packages: jupyter_client ")
+    assert data["message"].startswith("Session restarted. Packages: jupyter_client ")
     assert "ipykernel" not in data["message"], data
     assert kmod.get_kernel_info("pk")["packages"] == ["jupyter_client"]
 
@@ -363,7 +376,7 @@ async def test_g_crash_during_execution_texts():
     )
     assert out["error"] == (
         'Kernel "w" crashed during execution, its state is lost.'
-        ' Call python_reset(kernel_id="w") to restart it.'
+        ' python_reset(kernel_id="w") restarts it with its packages.'
     )
 
 
@@ -606,7 +619,7 @@ async def test_m_busy_default_kernel():
     data = await call("python_reset", {})
     assert data["replaced_busy_kernel"] is True and data["created"] is False, data
     assert data["message"] == (
-        "Session started (no packages). The previous kernel was still running"
+        "Session restarted (no packages). The previous kernel was still running"
         " code and was terminated."
     )
     out = await call("python_exec", {"code": "1 + 1"})

@@ -592,7 +592,7 @@ class TestResetPackageVersions:
         )
         data = json.loads(result[0].text)
         assert data["success"] is True, data
-        assert data["message"].startswith("Session started. Packages: IPyKernel[x] ")
+        assert data["message"].startswith("Session restarted. Packages: IPyKernel[x] ")
         assert not data["message"].endswith("?"), data
 
 
@@ -630,7 +630,7 @@ class TestResetKeepsPackages:
         ipk = importlib.metadata.version("ipykernel")
         jc = importlib.metadata.version("jupyter-client")
         assert data["message"] == (
-            f"Session started. Packages: ipykernel>=1 {ipk}, jupyter_client {jc}"
+            f"Session restarted. Packages: ipykernel>=1 {ipk}, jupyter_client {jc}"
         )
         assert "no packages" not in data["message"]
 
@@ -640,7 +640,7 @@ class TestResetKeepsPackages:
         kernel_id = json.loads(result[0].text)["kernel_id"]
         result = await call_tool("python_reset", {"kernel_id": kernel_id})
         data = json.loads(result[0].text)
-        assert data["message"] == "Session started (no packages)", data
+        assert data["message"] == "Session restarted (no packages)", data
 
 
 class TestDistributionName:

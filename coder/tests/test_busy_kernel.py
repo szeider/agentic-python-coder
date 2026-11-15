@@ -187,7 +187,7 @@ async def test_t2_t3_t4_t5_still_running_refused_status_reset():
     data, elapsed = await timed("python_reset", {"kernel_id": kid})
     assert data["success"] is True, data
     assert data["replaced_busy_kernel"] is True, data
-    assert data["message"] == "Session started (no packages)." + BUSY_SENTENCE
+    assert data["message"] == "Session restarted (no packages)." + BUSY_SENTENCE
     assert elapsed < 5 + 5, elapsed  # 5 s bound plus a normal kernel start
     assert process_gone(old_pid), f"old kernel {old_pid} still alive"
     data, _ = await exec_(kid, "1+1", 10)
@@ -225,7 +225,7 @@ async def test_idle_reset_reply_unchanged():
     assert data == {
         "success": True,
         "kernel_id": kid,
-        "message": "Session started (no packages)",
+        "message": "Session restarted (no packages)",
         "created": False,
     }
 

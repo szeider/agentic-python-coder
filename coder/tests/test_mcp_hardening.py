@@ -302,7 +302,7 @@ class TestInputSchemaValidation:
             "python_reset", {"packages": None, "kernel_id": None}
         )
         assert result["success"] is True, result
-        assert result["message"] == "Session started (no packages)"
+        assert result["message"] == "Session restarted (no packages)"
         kernel_id = result["kernel_id"]
 
         result = mcp_client.call_tool(

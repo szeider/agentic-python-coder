@@ -164,7 +164,7 @@ def _restart_hint(kernel_id: str) -> str:
             " not executed and must be sent again. python_reset() restarts it as"
             " well."
         )
-    return f'Call python_reset(kernel_id="{kernel_id}") to restart it.'
+    return f'python_reset(kernel_id="{kernel_id}") restarts it with its packages.'
 
 
 def truncate_output(result: dict) -> dict:
@@ -640,8 +640,10 @@ async def _reset(kernel_id: str, packages: List[str]) -> dict:
             except KeyError:
                 pass
 
+    # "restarted" for a live or crashed kernel brought back
+    session = "Session started" if created else "Session restarted"
     if packages:
-        msg = f"Session started with packages: {', '.join(packages)}"
+        msg = f"{session} with packages: {', '.join(packages)}"
         # Same probe discipline as python_status: no names bound, no
         # history entry, _ untouched
         try:
@@ -655,11 +657,11 @@ async def _reset(kernel_id: str, packages: List[str]) -> dict:
                 versions = ast.literal_eval(result["stdout"].strip())
                 if isinstance(versions, dict):
                     pkg_list = ", ".join(f"{p} {v}" for p, v in versions.items())
-                    msg = f"Session started. Packages: {pkg_list}"
+                    msg = f"{session}. Packages: {pkg_list}"
         except Exception:
             pass
     else:
-        msg = "Session started (no packages)"
+        msg = f"{session} (no packages)"
 
     reply = {"success": True, "kernel_id": kernel_id, "message": msg}
     if replaced_busy:
