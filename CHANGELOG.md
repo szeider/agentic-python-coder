@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.6.1 (2026-11-15)
+
+Kernel server (`ipython_mcp`). No change to tool names, parameters or existing result keys.
+
+### Fixed
+
+- When a kernel that was launched through uv dies during startup (for example because a package cannot be resolved), the error now ends with uv's reason: "Failed to start kernel: Kernel died before replying to kernel_info. uv said: ...". The server obtains it by running the same uv command once more with `python -c pass` (at most 30 s, only after a failed start). Before, the reason appeared only on the server's stderr.
+- `python_status`: `packages` lists the packages requested for the kernel first, then the others sorted by name, still cut at 20 entries. The new key `packages_total` gives the number before the cut (`null` while the kernel is busy or not running). Before, the list held the first 20 distributions in directory order, so requested packages could be missing.
+- The status probe no longer fails when user code has overwritten `repr`, `sorted`, `len` or `reversed`.
+
 ## 3.6.0 (2026-11-14)
 
 Kernel server (`ipython_mcp`). Tool names, parameters and existing result keys are unchanged; the new keys below are additions.

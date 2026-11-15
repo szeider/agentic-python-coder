@@ -177,6 +177,7 @@ async def test_t2_t3_t4_t5_still_running_refused_status_reset():
     # T4: status reports busy, quickly
     status, elapsed = await timed("python_status", {"kernel_id": kid})
     assert status["kernel_busy"] is True and status["active"] is True, status
+    assert status["packages"] == [] and status["packages_total"] is None, status
     assert elapsed < 1, elapsed
 
     # T5: reset does not wait for the running code
@@ -203,11 +204,13 @@ async def test_t4_idle_status_unchanged():
         "all_kernels",
         "python_version",
         "packages",
+        "packages_total",
         "variables",
         "kernel_busy",
     }
     assert status["kernel_busy"] is False
     assert status["python_version"] and status["packages"], status
+    assert status["packages_total"] >= len(status["packages"]), status
     assert status["variables"] == ["x"], status
 
 

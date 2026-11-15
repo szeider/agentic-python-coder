@@ -498,6 +498,7 @@ class TestStatusSideEffects:
             "all_kernels",
             "python_version",
             "packages",
+            "packages_total",
             "variables",
             "kernel_busy",
         }

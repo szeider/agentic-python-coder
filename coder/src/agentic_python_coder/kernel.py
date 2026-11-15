@@ -11,7 +11,9 @@ import os
 import re
 import shutil
 import signal
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -112,6 +114,55 @@ _replaced_busy: set = set()
 # ANSI escape sequences (IPython colours its tracebacks)
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
+# Diagnosis of a uv-launched kernel that died during startup: seconds
+# allowed for the rerun, bytes read from the end of its stderr, and the
+# maximum length of the text appended to the error (including "...")
+_UV_DIAGNOSIS_TIMEOUT = 30
+_UV_DIAGNOSIS_READ = 8192
+_UV_DIAGNOSIS_TAIL = 1500
+
+
+def _uv_diagnosis(uv_prefix: List[str], cwd: Optional[str]) -> str:
+    """uv's reason why a kernel launched with uv_prefix died, or "".
+
+    Reruns the same uv command with `python -c pass` in place of the kernel
+    module, in its own session, with stderr in a temporary file. Returns the
+    cleaned tail of its stderr if it exits nonzero, and "" if it succeeds,
+    cannot be run or times out (then its process group is killed). Never
+    raises; writes nothing to our stdout or stderr.
+    """
+    try:
+        with tempfile.TemporaryFile() as err:
+            proc = subprocess.Popen(
+                list(uv_prefix) + ["python", "-c", "pass"],
+                cwd=cwd or None,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=err,
+                start_new_session=True,
+            )
+            try:
+                code = proc.wait(timeout=_UV_DIAGNOSIS_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                proc.wait()
+                return ""
+            if code == 0:
+                return ""
+            size = err.seek(0, os.SEEK_END)
+            err.seek(max(0, size - _UV_DIAGNOSIS_READ))
+            data = err.read()
+    except Exception:
+        return ""
+    text = " ".join(_ANSI_RE.sub("", data.decode("utf-8", "replace")).split())
+    if len(text) > _UV_DIAGNOSIS_TAIL:
+        text = "..." + text[-(_UV_DIAGNOSIS_TAIL - 3) :]
+    return text
+
+
 # Suppress Jupyter warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
@@ -149,6 +200,8 @@ class UVKernelManager(KernelManager):
         super().__init__(**kwargs)
         self.with_packages = with_packages
         self.uv_cwd = cwd
+        # uv part of the last launch command, for diagnosing a failed start
+        self.uv_prefix: Optional[List[str]] = None
 
         # Check UV availability
         if self.with_packages and not shutil.which("uv"):
@@ -193,6 +246,7 @@ class UVKernelManager(KernelManager):
             cmd[0] = "python"
 
         # Return wrapped command
+        self.uv_prefix = list(uv_prefix)
         wrapped_cmd = uv_prefix + cmd
 
         # Log the command for debugging
@@ -277,9 +331,17 @@ class PythonKernel:
 
         except Exception as e:
             logger.error(f"Failed to start kernel: {e}")
+            km = getattr(self, "km", None)
+            died = km is not None and not self._alive()
+            uv_prefix = getattr(km, "uv_prefix", None) if died else None
             # Clean up any partially started resources
             self._cleanup_on_error()
-            raise RuntimeError(f"Failed to start kernel: {e}") from e
+            message = f"Failed to start kernel: {e}"
+            if uv_prefix:
+                reason = _uv_diagnosis(uv_prefix, cwd)
+                if reason:
+                    message = f"{message.rstrip('.')}. uv said: {reason}"
+            raise RuntimeError(message) from e
 
     def _inject_startup_code(self):
         """Inject safety and configuration code: block input(), set matplotlib, etc."""

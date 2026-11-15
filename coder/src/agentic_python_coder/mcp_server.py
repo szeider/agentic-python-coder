@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import threading
 from typing import List, Optional
@@ -71,9 +72,13 @@ def _status_probe(expr: str) -> str:
 
     Writing (instead of a last-expression value) keeps the probe out of the
     user's ``_``/``Out``, ``__import__`` keeps it from binding names, and
-    sys.stdout.write survives a user-shadowed print.
+    sys.stdout.write survives a user-shadowed print, the builtins module's
+    repr a user-shadowed repr.
     """
-    return f"if True:\n    __import__('sys').stdout.write(repr({expr}) + '\\n')\n"
+    return (
+        "if True:\n    __import__('sys').stdout.write("
+        f"__import__('builtins').repr({expr}) + '\\n')\n"
+    )
 
 
 def _distribution_name(requirement: str) -> Optional[str]:
@@ -96,6 +101,50 @@ def _package_versions_probe(packages: List[str]) -> str:
         "__import__('importlib.metadata').metadata.distributions(name=name)),"
         " None), 'version', '?')"
         f" for req, name in {pairs!r}}}"
+    )
+
+
+# python_status lists at most this many packages, and hides these tools
+# unless they were requested
+STATUS_MAX_PACKAGES = 20
+_STATUS_HIDDEN = ("pip", "setuptools", "wheel", "ipykernel", "jupyter-client")
+
+
+def _normalized_name(name: str) -> str:
+    """PEP 503 normalized distribution name."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _status_packages_probe(requested: List[str]) -> str:
+    """Probe code writing (packages, total) to stdout.
+
+    packages: "name version" strings, first the requested distributions in
+    the order given, then the others sorted case-insensitively by name, cut
+    at STATUS_MAX_PACKAGES. total: length of that list before the cut.
+    """
+    req = list(
+        dict.fromkeys(
+            _normalized_name(n)
+            for n in (_distribution_name(p) for p in requested)
+            if n is not None
+        )
+    )
+    # Builtins are taken from the builtins module, so that user variables
+    # named sorted, len or reversed do not break the probe. Reversed: the
+    # first distribution on sys.path wins, as for importlib.metadata.version
+    return _status_probe(
+        "(lambda B, req, hidden, m: ("
+        "([f'{m[k][0]} {m[k][1]}' for k in req if k in m]"
+        " + [f'{n} {v}' for k, (n, v) in"
+        " B.sorted(m.items(), key=lambda i: i[1][0].lower())"
+        " if k not in req and k not in hidden])"
+        f"[:{STATUS_MAX_PACKAGES}],"
+        " B.len([k for k in m if k in req or k not in hidden])))("
+        f"__import__('builtins'), {req!r}, {_STATUS_HIDDEN!r}, "
+        "{__import__('re').sub('[-_.]+', '-', n).lower(): (n, d.version)"
+        " for d, n in __import__('builtins').reversed([(d, d.metadata.get('Name'))"
+        " for d in __import__('importlib.metadata').metadata.distributions()])"
+        " if n})"
     )
 
 
@@ -551,22 +600,21 @@ async def call_tool(name: str, arguments: dict):
             "all_kernels": all_kernel_ids,
             "python_version": None,
             "packages": [],
+            "packages_total": None,
             "variables": [],
             "kernel_busy": False,
         }
 
         if is_active:
+            try:
+                requested = list(get_kernel_info(kernel_id)["packages"] or [])
+            except KeyError:
+                requested = []
             # Probes run only when the kernel is idle (a busy kernel keeps
             # the defaults above); they never interrupt user code
             probes = {
                 "python_version": _status_probe("__import__('sys').version"),
-                "packages": _status_probe(
-                    "[f\"{d.metadata['Name']} {d.version}\" for d in"
-                    " __import__('importlib.metadata').metadata.distributions()"
-                    " if d.metadata['Name'] not in"
-                    " ('pip', 'setuptools', 'wheel', 'ipykernel', 'jupyter-client')"
-                    "][:20]"
-                ),
+                "packages": _status_packages_probe(requested),
                 "variables": _status_probe(
                     "[name for name in dir() if not name.startswith('_')"
                     " and name not in"
@@ -585,9 +633,14 @@ async def call_tool(name: str, arguments: dict):
             for key, result in zip(probes, results or []):
                 if result.get("error") is None and result.get("stdout"):
                     try:
-                        status[key] = ast.literal_eval(result["stdout"].strip())
+                        value = ast.literal_eval(result["stdout"].strip())
                     except (ValueError, SyntaxError):
-                        pass
+                        continue
+                    if key == "packages":
+                        if isinstance(value, tuple) and len(value) == 2:
+                            status["packages"], status["packages_total"] = value
+                    else:
+                        status[key] = value
             # The probe retires a kernel found dead: report it like any
             # kernel that is not in the registry
             if not kernel_exists(kernel_id):
