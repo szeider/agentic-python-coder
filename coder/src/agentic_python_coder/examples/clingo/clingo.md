@@ -7,15 +7,15 @@ Produce a solution using Answer Set Programming (ASP) that correctly models and 
 
 ### Non-Negotiable Requirements
 1. **Tool**: You MUST use the clingo Python API for modeling and solving
-2. **Execution Time**: Your script must complete within 10 seconds
-   - **Optimization vs Bounds**: If the problem provides an expected optimal value or bound (e.g., "expected minimum cost: 50"), use that value as a CONSTRAINT rather than using `#minimize`/`#maximize`. Finding the absolute optimum can be extremely expensive. Instead, find any solution that satisfies the given bound.
-   - **Example**: Instead of `#minimize { Cost : total_cost(Cost) }`, use `:- total_cost(Cost), Cost > 50.`
+2. **Time Limits and Objectives**: Follow any time limit the task states
+   - **Optimization vs Bounds**: If the problem asks for an optimum, keep the objective (`#minimize`/`#maximize`). If the task states an optimal value or bound as a fact, you may add it as a constraint to speed up search, in addition to the objective, not instead of it. Report the objective value reached.
+   - **Example**: Keep `#minimize { Cost : total_cost(Cost) }.` and, for a stated bound of 50, add `:- total_cost(Cost), Cost > 50.`
 3. **Output Format**: Print the final solution as a single JSON object to stdout
 4. **Task Planning**: Structure your approach with clear steps:
    - Mentally break down the problem into 5-8 logical tasks
    - Follow the structured workflow defined below
    - Use code comments to track your progress through tasks
-5. **Error Documentation**: Create `feedback.md` for environment/specification issues
+5. **Error Documentation**: Report environment/specification issues in a code comment or your final message
 
 ### Output Specifications
 - Generate ONLY executable Python code using clingo
@@ -33,7 +33,7 @@ Before completing your solution, verify:
 ☐ 5. **Output format correct** - JSON output with appropriate structure
 ☐ 6. **Predicates meaningful** - Clear names that reflect the problem domain
 ☐ 7. **Constraints verified independently** - All problem constraints are encoded AND re-checked by a plain-Python verify() whose expectations are re-derived from the problem text, not from your encoding's own interpretation
-☐ 8. **File written** - Create `solution.py` with complete working code
+☐ 8. **Code saved** - Complete working code saved once with the save_code tool, after verification
 
 ## Section 2: Critical Rules of Engagement
 
@@ -79,7 +79,7 @@ All data must come from two places only:
 
 #### Hierarchy of Truth: Data Tables vs. Example Outputs
 
-**CRITICAL RULE**: When a problem specification contains both data tables/lists AND example outputs, the **data tables are the single, immutable source of truth**. Example outputs demonstrate the required **format** only - their **values** are illustrative.
+**CRITICAL RULE**: When a problem specification contains both data tables/lists AND example outputs, the **data tables, not the examples, supply the instance's values** unless the task declares an example normative, and the task's explicit constraints still apply to that data. Example outputs demonstrate the required **format** only - their **values** are illustrative.
 
 **NEVER modify, invent, or transfer data to match an example output.** Your model must solve the problem defined by the data tables, even if the example's values appear inconsistent.
 
@@ -96,8 +96,8 @@ All data must come from two places only:
 | **Data:** "Capacities: Server1: 100GB, Server2: 200GB" <br/><br/> **Example:** Shows Server3 in use <br/><br/> `capacity("Server1",100). capacity("Server2",200). capacity("Server3",150).` <br/><br/> **Error**: Added Server3 because example showed it | **Data:** "Capacities: Server1: 100GB, Server2: 200GB" <br/><br/> **Example:** Shows Server3 in use <br/><br/> `capacity("Server1",100). capacity("Server2",200).` <br/><br/> **Explanation**: Example is from a different instance. Use only the provided servers. |
 
 **Priority Order:**
-1. **Primary data tables/lists** (highest priority)
-2. **Explicit problem constraints**
+1. **Primary data tables/lists** (highest priority for values)
+2. **Explicit problem constraints** (apply to the data; if the two conflict, report the conflict instead of changing either)
 3. **Example output structure** (format guidance only)
 4. **Example output values** (ignore if inconsistent)
 
@@ -151,12 +151,12 @@ Imagine you have `task(1..10)` and `assigned(T, W)` facts for tasks that are alr
 |:----------------------------------------------|:--------|
 | `unassigned(T) :- not assigned(T, W).` <br/><br/> **Error:** The variable `W` is unsafe. The solver doesn't know which set of workers (`W`) to check for non-assignment. | `unassigned(T) :- task(T), not assigned(T, _).` <br/><br/> **Explanation:** `task(T)` grounds the `T` variable. The underscore `_` in `not assigned(T, _)` checks for the existence of *any* assignment for that specific task `T`, correctly identifying tasks with no assignments. |
 
-**Example: Circuit diagnosis - ordering matters!**
-When a variable appears in multiple places, it must be grounded before being used in negation.
+**Example: Circuit diagnosis - literal order does not matter**
+Safety does not depend on the order of body literals: a variable used in negation is safe if it also occurs in some positive literal anywhere in the same body.
 
 | Incorrect (unsafe variable error) | Correct |
 |:----------------------------------------------|:--------|
-| `wire_value(T, W, V) :- not faulty(G, _), gate_output(G, W), correct_output(T, G, V).` <br/><br/> **Error:** `G` is unsafe - it first appears in `not faulty(G, _)`. | `wire_value(T, W, V) :- gate_output(G, W), not faulty(G, _), correct_output(T, G, V).` <br/><br/> **Explanation:** `gate_output(G, W)` grounds `G` first. Now `not faulty(G, _)` checks if *that specific gate* is healthy. |
+| `wire_value(T, W, V) :- not faulty(G, _), correct_output(T, W, V).` <br/><br/> **Error:** `G` is unsafe - it occurs only in `not faulty(G, _)`. | `wire_value(T, W, V) :- not faulty(G, _), gate_output(G, W), correct_output(T, G, V).` <br/><br/> **Explanation:** `gate_output(G, W)` grounds `G`, whether it is written before or after the negated literal. Now `not faulty(G, _)` checks if *that specific gate* is healthy. |
 
 #### Choice Rule Variable Safety
 
@@ -222,7 +222,7 @@ total(T) :- T = #sum{C,X : selected(X), cost(X,C)}.
 
 ### MANDATORY RULE: State Exclusivity (Fluents)
 
-**FUNDAMENTAL PRINCIPLE**: A property that changes over time (a "fluent") can only have ONE value at any given time. You MUST enforce mutual exclusivity.
+**FUNDAMENTAL PRINCIPLE**: When the task specifies a property that changes over time (a "fluent") as single-valued, such as the location of an object, you MUST enforce that it has at most one value at any given time.
 
 **Critical for temporal problems**: An entity cannot be in two states simultaneously.
 
@@ -287,9 +287,9 @@ Use comments in your code to indicate which task you're working on:
 - Verify solution satisfies constraints
 - Handle UNSAT cases gracefully
 
-### When to Create feedback.md
+### When to Report Issues
 
-Create `feedback.md` ONLY for:
+Report issues in a code comment or your final message ONLY for:
 - Missing packages or imports
 - Inconsistencies or ambiguities in problem description
 - Conflicting constraints that make problem unsolvable
@@ -345,17 +345,16 @@ NOT for your own logic errors or debugging.
 
 ### 2.7 Multi-Objective Optimization
 
-When using multiple `#minimize` or `#maximize` statements, clingo optimizes level-by-level in order:
+The order of `#minimize`/`#maximize` statements does not set priorities. Without `@` levels, all statements share one level and their weights are added into a single objective (identical tuples count once, so include an identifier such as `P` in each tuple). Use `@` levels for priorities; clingo optimizes the highest level first:
 
 ```asp
 % Optimized in this order:
-#maximize { Score*3 : ai_performance(Score) }.    % First priority
-#maximize { Score*2 : gaming_score(Score) }.      % Second priority  
-#maximize { Score : user_preference(Score) }.     % Third priority
-#minimize { Cost : total_cost(Cost) }.            % Fourth priority
+#maximize { S@3,P : chosen(P), ai_performance(P,S) }.   % First priority
+#maximize { S@2,P : chosen(P), gaming_score(P,S) }.     % Second priority
+#minimize { C@1,P : chosen(P), cost(P,C) }.             % Third priority
 ```
 
-This allows sophisticated trade-off balancing without complex weight tuning.
+Weights within one level (for example `S*3` and `S*2`) express trade-offs; levels express strict priorities.
 
 ## Section 3: Clingo API & Implementation Guide
 
@@ -405,19 +404,19 @@ else:
 
 ### CRITICAL: Finding One vs. All Solutions (Solver Configuration)
 
-A frequent and critical error is misconfiguring the solver to search for all possible solutions when only one is required. This is a leading cause of timeouts on moderately complex problems. The number of models to find is controlled by the first argument to `clingo.Control()`.
+A frequent and critical error is misconfiguring the solver to search for all possible solutions when only one is required. This is a leading cause of timeouts on moderately complex problems. The number of models to find is controlled by the first argument to `clingo.Control()`; without it, clingo stops after one model.
 
 > **Fundamental Rule:** If the problem asks for *a* feasible solution, you MUST limit the solver to find only one.
 
 | Configuration                  | Behavior                                                | Use Case                                                                              | Consequence of Misuse                                                                                             |
 | :----------------------------- | :------------------------------------------------------ | :------------------------------------------------------------------------------------ | :---------------------------------------------------------------------------------------------------------------- |
-| `ctl = clingo.Control(["1"])`   | **Stops after the first solution (model) is found.**    | **This should be your default for most tasks.** Use when the problem asks for *any* valid solution. | (Safe)                                                                                                            |
-| `ctl = clingo.Control()` or `ctl = clingo.Control(["0"])` | **Finds all possible solutions.** | Use **only** when the problem explicitly requires enumerating every single valid combination. | **Leads to timeouts.** The solver will continue working long after finding a valid solution, needlessly exploring the entire search space. |
+| `ctl = clingo.Control()` or `ctl = clingo.Control(["1"])`   | **Stops after the first solution (model) is found.**    | **This should be your default for most tasks.** Use when the problem asks for *any* valid solution. | (Safe)                                                                                                            |
+| `ctl = clingo.Control(["0"])` | **Finds all possible solutions.** | Use **only** when the problem explicitly requires enumerating every single valid combination. | **Leads to timeouts.** The solver will continue working long after finding a valid solution, needlessly exploring the entire search space. |
 
 **Example from a Failed Task (Bin Packing):**
 - **The Goal:** Find one valid way to pack bins.
 - **The Mistake:** `ctl = clingo.Control(["0"])` was used. The solver found a valid packing quickly but then continued searching for all other possible valid packings, eventually timing out.
-- **The Fix:** Changing the call to `ctl = clingo.Control(["1"])` allows the program to terminate immediately after the first valid model is found, solving the problem well within the time limit.
+- **The Fix:** Changing the call to `ctl = clingo.Control(["1"])` (or `clingo.Control()`, which also stops at one model) allows the program to terminate immediately after the first valid model is found, solving the problem well within the time limit.
 
 ### The Three-Step Action Modeling Pattern (CRITICAL for temporal problems)
 
@@ -512,7 +511,7 @@ This also applies to verification: snapshot the atoms into plain Python inside
 ### 4.1 Modeling State and Change (NEW - CRITICAL)
 
 #### A. Define Exclusive States (Fluents)
-A fluent is a property that changes over time. It can only have ONE value at any time.
+A fluent is a property that changes over time. If the task makes it single-valued, it has at most ONE value at any time.
 
 **Examples of fluents:**
 - Location of an object
@@ -599,7 +598,7 @@ carrying(R,I,T+1) :- carrying(R,I,T), time(T+1),
 
 **CRITICAL: Always Define a Finite Time Horizon**
 
-For scheduling, planning, and any temporal problem, you MUST define a finite time domain. Without this, the solver may attempt to explore an infinite search space, leading to grounding errors (`#inf@0`) or extreme slowness.
+When your encoding indexes atoms by time (as in most scheduling and planning encodings), you MUST give the time argument a finite domain. Without this, the solver may attempt to explore an infinite search space, leading to grounding errors (`#inf@0`) or extreme slowness.
 
 ```asp
 % REQUIRED: Define finite time domain first
@@ -697,32 +696,21 @@ carrying(R,I,T+1) :- carrying(R,I,T), time(T+1),
 
 ### 4.7 Enforcing Dependent Properties (A implies B)
 
-A common task is to enforce that if one property `P` exists, a corresponding property `Q` must also exist. A frequent mistake is to only forbid the case `P and not Q` using complex joins, which can be brittle. A more robust pattern is to state the implication directly as a constraint.
-
-**Pattern: If a keyed path exists, a keyless return MUST exist.**
-
-Let's say for a connection `conn(R1, R2, Key)`, we must ensure `conn(R2, R1, "null")` exists.
-
-**Incorrect Attempt (Brittle):**
-This attempts to join all possibilities and forbid the bad ones. It fails if multiple return paths exist or if the solver simply avoids creating a bidirectional link.
-```asp
-% Fails to enforce generation; only prunes specific bad combinations.
-:- conn(R1, R2, Req1), conn(R2, R1, Req2), key(Req1), Req2 != "null".
-```
-
-**Correct Pattern (Robust Logic):**
-This pattern forbids the state where the premise (`keyed path exists`) is true but the conclusion (`keyless return path exists`) is false. This forces the solver to generate the conclusion to satisfy the constraint.
+A common task is to enforce that if one property `P` holds, a corresponding property `Q` must also hold. State the implication directly as a constraint that forbids the premise without the conclusion:
 
 ```asp
-% Define the premise: a keyed path exists from R1 to R2.
-keyed_path(R1, R2) :- conn(R1, R2, Req), key(Req).
-
-% Enforce the conclusion: if a keyed path exists, a keyless return MUST exist.
-% This translates to: "It is an error if a keyed path from R1 to R2 exists
-% AND a keyless path from R2 to R1 does NOT exist."
-:- keyed_path(R1, R2), not conn(R2, R1, "null").
+:- premise(X), not conclusion(X).
 ```
-This approach correctly models the logical implication `keyed_path(R1, R2) -> conn(R2, R1, "null")` and is the standard way to express such dependencies in ASP.
+
+The constraint only eliminates answer sets; it does not create `conclusion(X)`. Some rule or choice must be able to derive the conclusion, otherwise every answer set containing the premise is removed.
+
+**Example: every order must be shipped by at least one carrier.**
+```asp
+order(o1;o2). carrier(c1;c2).
+{ ships(O, C) : carrier(C) } :- order(O).
+shipped(O) :- ships(O, _).
+:- order(O), not shipped(O).
+```
 
 ### 4.8 Default Logic with Negation as Failure
 
@@ -858,173 +846,45 @@ on_table_space(T) :- #count { B : on_table(B,T) } < max_table_slots.
 
 ### 4.10 Sequence and Run-Based Constraints
 
-**Critical for**: Puzzles with consecutive sequences (nonograms, nurse scheduling, delivery routes), problems requiring runs of items with specific properties.
+**Critical for**: problems where a sequence (a row of a grid, a shift roster, a route) must contain given runs: consecutive cells/slots with the same property, in a given order.
 
-Modeling sequences or "runs" of consecutive items is common in constraint problems. A critical distinction exists between problems where ALL items must justify themselves vs. problems where only certain items need to form runs.
-
-#### Understanding "Runs" in Different Problem Types
-
-**Run Definition**: A consecutive sequence of cells/slots with the same property (color, state, assignment).
-
-**Two Fundamentally Different Patterns:**
-
-1. **Simple Binary Problems** (e.g., black-and-white nonogram):
-   - Every "on" cell MUST belong to a defined run
-   - White cells are just separators
-   - Total coverage constraint is VALID
-
-2. **Multi-State Problems** (e.g., colored nonogram, multi-skill nurse scheduling):
-   - Cells/slots of one state can act as separators for runs of another state
-   - Only run-forming cells need to justify themselves
-   - Total coverage constraint is INVALID
-
-#### Anti-Pattern: Incorrect Total Coverage
-
-A common error is applying simple binary logic to multi-state problems:
+First decide from the task whether the clues are exhaustive. If they are, every non-background cell belongs to exactly one clued run, and every clued run must occur. If the task says clues are not exhaustive, replace the last constraint below by what the task says about cells outside the runs.
 
 ```asp
-% ANTI-PATTERN for multi-color/multi-state problems
-% This says: "Every non-empty cell MUST be part of a defined run"
-% This is WRONG when cells of one color/state can separate runs of another
-:- cell(R, C, Color), Color != empty, not is_in_a_run(R, C, Color).
-
-% Example failure case:
-% Row clue: [(red, 2), (red, 2)]
-% Valid solution: [red, red, green, red, red]
-% The green cell at index 2 is NOT in any green run, but it's REQUIRED
-% to separate the two red runs. The constraint incorrectly forbids this!
+% clue(I, C, L): the I-th run (I = 1, 2, ...) has color C and length L; color 0 = background
+pos(1..n). color(0..k).
+1 { cell(P, C) : color(C) } 1 :- pos(P).
+% every clued run occurs exactly once
+1 { start(I, S) : pos(S), S + L - 1 <= n } 1 :- clue(I, _, L).
+% runs in clue order; consecutive runs of the same color need a gap
+:- start(I, S1), start(I+1, S2), clue(I, _, L1), S2 < S1 + L1.
+:- start(I, S1), start(I+1, S2), clue(I, C, L1), clue(I+1, C, _), S2 = S1 + L1.
+% cells of a run have the run's color
+in_run(P) :- start(I, S), clue(I, C, L), pos(P), S <= P, P < S + L.
+:- start(I, S), clue(I, C, L), pos(P), S <= P, P < S + L, not cell(P, C).
+% exhaustive clues: every non-background cell lies in a clued run
+:- cell(P, C), C != 0, not in_run(P).
 ```
 
-**Why This Fails:**
-- In multi-state problems, non-run items serve as separators
-- Requiring every item to justify itself over-constrains the model
-- Creates false UNSAT or forces invalid solutions
-
-#### Correct Pattern: Constrain Runs, Not Gaps
-
-The correct approach focuses ONLY on enforcing run properties, letting the solver determine separators naturally:
-
-```asp
-% CORRECT PATTERN: Only constrain the runs themselves
-
-% 1. Define run positions (generate)
-{ run_pos(Row, RunIdx, StartCol) : possible_start(StartCol) } 1
-    :- row_clue(Row, RunIdx, _, _).
-
-% 2. Enforce run cells match the required color/state (constrain)
-:- run_pos(Row, RunIdx, Start), row_clue(Row, RunIdx, RequiredColor, Len),
-   col(C), C >= Start, C < Start + Len,
-   cell(Row, C, ActualColor), ActualColor != RequiredColor.
-
-% 3. Enforce ordering (runs appear in sequence)
-:- run_pos(R, I1, C1), run_pos(R, I2, C2),
-   row_clue(R, I1, _, L1), I2 = I1 + 1, C2 < C1 + L1.
-
-% 4. Enforce separation for same-color/state runs only
-%    (Different colors/states CAN be adjacent)
-:- run_pos(R, I1, C1), run_pos(R, I2, C2),
-   row_clue(R, I1, Color, L1), row_clue(R, I2, Color, _),
-   I1 < I2, C2 < C1 + L1 + 1.  % Same color needs gap
-
-% NOTE: NO constraint on cells outside of runs!
-% The solver determines their values to satisfy other constraints
-```
-
-#### Pattern Comparison Table
-
-| Problem Type | Run Coverage | Separation Rules | Example Domains |
-|:-------------|:-------------|:-----------------|:----------------|
-| **Binary** | All "on" cells in runs | All runs need separation | B&W Nonogram, Simple scheduling |
-| **Multi-State** | Only run-forming cells in runs | Same-state runs need separation<br/>Different-state runs can be adjacent | Colored Nonogram, Multi-skill scheduling, Delivery with vehicle types |
-
-#### Complete Multi-Color Nonogram Pattern
-
-```asp
-% Facts
-row(1..n). col(1..m).
-color(0..k).  % 0 = empty/white
-row_clue(Row, RunIdx, Color, Length) :- ...  % From problem data
-col_clue(Col, RunIdx, Color, Length) :- ...
-
-% Grid - each cell gets exactly one color
-{ cell(R, C, Color) : color(Color) } 1 :- row(R), col(C).
-
-% ROW CONSTRAINTS
-% Define possible starting positions for runs
-possible_col(C) :- col(C).
-
-% Each run clue gets exactly one starting position
-{ row_run_pos(R, RunIdx, StartCol) : possible_col(StartCol) } 1
-    :- row_clue(R, RunIdx, _, _).
-
-% Cells within run must match run's color
-:- row_run_pos(R, RunIdx, Start), row_clue(R, RunIdx, ReqColor, Len),
-   col(C), C >= Start, C < Start + Len,
-   cell(R, C, ActualColor), ActualColor != ReqColor.
-
-% Runs must appear in order
-:- row_run_pos(R, I1, C1), row_run_pos(R, I2, C2),
-   row_clue(R, I1, _, L1), I2 = I1 + 1, C2 < C1 + L1.
-
-% Runs of SAME color must be separated (different colors can touch)
-:- row_run_pos(R, I1, C1), row_run_pos(R, I2, C2),
-   row_clue(R, I1, SameColor, L1), row_clue(R, I2, SameColor, _),
-   I1 < I2, C2 < C1 + L1 + 1.
-
-% Repeat for column constraints...
-% (Same pattern with row/col swapped)
-```
-
-#### When to Use This Pattern
-
-**Use Correct (Constrain Runs Only) Pattern When:**
-- Multiple colors/states can coexist
-- Different types can be adjacent
-- Separators have meaningful values
-- Problem has multi-dimensional constraints
-
-**Examples:**
-- Colored nonograms
-- Multi-skill nurse scheduling
-- Vehicle routing with different vehicle types
-- Resource allocation with multiple resource types
-
-#### Key Takeaways
-
-1. **Never require total coverage** in multi-state sequence problems
-2. **Only constrain run properties**: position, length, internal consistency
-3. **Separate by sameness**: Only runs of identical color/state need gaps
-4. **Let solver determine gaps**: Don't over-constrain non-run cells
-5. **Different is adjacent**: Cells of different colors/states CAN touch
+For a grid, add the row or column index to `clue`, `start` and `in_run`, and map positions to grid cells.
 
 ### 4.11 "Reachable Only After" / Ordered Reachability Constraints
 
-When a problem requires that some target element become reachable only after all
-other elements (or only after specific ones) under an evolving reachability process,
-do NOT model it as an existential ordering — guessing a permutation with the target
-pinned last only proves that SOME order exists, which is weaker than what such
-problems ask. The intended reading is almost always about the actual reachability
-process: everything reachable gets reached as soon as it is reachable.
+An ordering requirement on reachability has two different readings: (1) there exists some order of visiting the elements that satisfies the requirement (a guessed sequence or path), or (2) each element becomes accessible at the earliest step a stated progression rule allows, and the requirement concerns these earliest steps. Take the reading from the task; if the task does not settle it, state your assumption.
 
-Model the process directly with a time-indexed fixpoint and constrain first-reach
-times:
+For reading (2), compute earliest accessibility with a time-indexed fixpoint:
 
 ```asp
-step(0..max_step).
-reached(S, 0) :- start(S).
-reached(Y, T+1) :- edge(X, Y), reached(X, T), step(T+1), unlocked(X, Y, T).
-reached(X, T+1) :- reached(X, T), step(T+1).                    % persistence
-first_reached(X, 0) :- reached(X, 0).
-first_reached(X, T) :- reached(X, T), not reached(X, T-1), T > 0, step(T).
-
-% target must not become reachable before (or together with) any other element:
-:- first_reached(target, Tg), first_reached(X, Tx), X != target, Tx >= Tg.
+step(0..h).
+acc(X, 0) :- start(X).
+acc(Y, T+1) :- acc(X, T), edge(X, Y), open(X, Y, T), step(T+1).
+acc(X, T+1) :- acc(X, T), step(T+1).                    % persistence
+first(X, T) :- acc(X, T), not acc(X, T-1).
 ```
 
-Adapt `unlocked/3` to whatever gates progression (collected items, satisfied
-prerequisites, ...). Verify with a plain-Python simulation of the same process:
-repeatedly add everything currently reachable, one step at a time, and check the
-required ordering of first-reach steps against the problem text — do not reuse
+Define `open/3` from the task's progression rule, then constrain `first/2` as the task requires; whether two elements may become accessible at the same step is part of the task. Verify with a plain-Python simulation of the same process:
+repeatedly add everything currently accessible, one step at a time, and check the
+required ordering of first-access steps against the problem text — do not reuse
 your encoding's ordering predicates in the verifier.
 
 ## Section 5: Debugging & Advanced Techniques
@@ -1051,14 +911,14 @@ compatible(1,c1). compatible(2,c1). %... many other compatibility facts
 ```
 **Why it's slow:** The solver must first consider 5,000 potential `placed/2` atoms before eliminating most of them.
 
-**Critical Note: Beyond Performance, This is a Correctness Issue**
+**Note: Source Filtering Changes Grounding Size, Not Answer Sets**
 
-The "Generate-and-Filter" anti-pattern is not just slow; it can lead to confusing `UNSATISFIABLE` results. If the choice rule generates a candidate for which the filtering data does not exist, the solver may be forced into an impossible state.
+Moving a filter into the choice domain does not change which answer sets exist. In particular, it does not avoid an `UNSATISFIABLE` result caused by missing data.
 
 **Example: Assigning Features to Devices**
 Suppose you must assign a `feature(F)` to a `device(D)`, but only if a `driver(F, D)` fact exists.
 
-**Anti-Pattern (Brittle and Confusing):**
+**Generate-and-Filter:**
 ```asp
 % For each feature, choose a device to assign it to.
 1 { assign(F, D) : device(D) } 1 :- feature(F).
@@ -1066,14 +926,14 @@ Suppose you must assign a `feature(F)` to a `device(D)`, but only if a `driver(F
 % Constraint: An assignment is only valid if a driver exists.
 :- assign(F,D), not driver(F,D).
 ```
-**The Hidden Problem:** If you have a `feature(f_special)` for which **no** `driver(f_special, _)` facts exist, this model becomes UNSAT. The choice rule forces an assignment `assign(f_special, D)` for some device `D`. But the constraint then makes every possible choice invalid, leading to failure with no obvious reason why.
 
-By constraining at the source, you avoid this problem entirely:
+**Constrained at the Source (same answer sets, smaller grounding):**
 ```asp
-% CORRECT: Only generate assignments where a driver exists
+% Only generate assignments where a driver exists
 1 { assign(F, D) : device(D), driver(F, D) } 1 :- feature(F).
 % No separate constraint needed - only valid pairs are considered
 ```
+**Both versions are UNSAT** if some `feature(f_special)` has **no** `driver(f_special, _)` fact, because `1 { ... } 1` requires one assignment from an empty set of options. Check the data for such gaps before solving, and if the task allows unassigned features, lower the bound to `0 { ... } 1`.
 
 **Good Pattern: Constrain During Generation**
 This approach only generates combinations that are already known to be valid.
@@ -1101,35 +961,34 @@ When counting relationships between pairs of entities (connections, edges, paths
 A common mistake is to define a relationship symmetrically, which causes each instance to be counted multiple times:
 
 ```asp
-% INCORRECT: Double-counts one-way paths
-% If R3 -> R4 is one-way, this creates BOTH oneway("R3","R4") AND oneway("R4","R3")
-oneway(R1, R2) :- conn(R1, R2, _), not conn(R2, R1, _), R2 != "Goal".
-oneway(R1, R2) :- conn(R2, R1, _), not conn(R1, R2, _), R2 != "Goal".
+% INCORRECT: Double-counts one-way links
+% If a -> b is one-way, this creates BOTH oneway(a,b) AND oneway(b,a)
+oneway(A, B) :- link(A, B), not link(B, A).
+oneway(A, B) :- link(B, A), not link(A, B).
 
-% This constraint expects count=1, but gets count=2 for a single path!
-:- #count { R1, R2 : oneway(R1, R2) } != 1.
+% Counts each one-way link twice
+n_oneway(N) :- N = #count { A, B : oneway(A, B) }.
 ```
 
 **The Solution: Canonical Ordering**
 
-Establish a canonical representation for each pair by enforcing an ordering constraint (typically using `<`). This ensures each pair is represented exactly once:
+Establish a canonical representation for each unordered pair by enforcing an ordering constraint (typically using `<`). This ensures each pair is represented exactly once. Count ordered (directed) relationships directly; canonicalize only unordered ones.
 
 ```asp
 % CORRECT: Canonical counting with ordering
-% A one-way path between R1 and R2 (where R1 < R2) creates exactly ONE atom
-oneway_pair(R1, R2) :- R1 < R2,
-    ( (conn(R1, R2, _), not conn(R2, R1, _)) ;
-      (conn(R2, R1, _), not conn(R1, R2, _)) ).
+% A one-way link between A and B (where A < B) creates exactly ONE atom
+oneway_pair(A, B) :- link(A, B), not link(B, A), A < B.
+oneway_pair(A, B) :- link(B, A), not link(A, B), A < B.
 
-% Now the constraint works correctly
-:- #count { R1, R2 : oneway_pair(R1, R2) } != 1.
+% Now each one-way link is counted once
+n_oneway(N) :- N = #count { A, B : oneway_pair(A, B) }.
 ```
 
 **Pattern Examples:**
 
 ```asp
 % Bidirectional connections (canonical form)
-bidirectional(R1, R2) :- R1 < R2, conn(R1, R2, _), conn(R2, R1, _).
+bidirectional(A, B) :- A < B, link(A, B), link(B, A).
 
 % Counting edges in undirected graphs
 edge_count(N) :- N = #count { V1, V2 : V1 < V2, edge(V1, V2) }.
@@ -1148,35 +1007,7 @@ isolated_pair(A, B) :- A < B, entity(A), entity(B),
 
 ### 5.3 CRITICAL: Controlling Cardinality with Choice Rule Bounds
 
-While Section 5.1 focuses on filtering the *domain* of a choice rule, it is equally critical to control the *number* of atoms chosen from that domain. An unbounded choice rule `{...}` allows the solver to select *any number* of atoms, which is often not the desired behavior and can lead to logical errors and massive search spaces.
-
-> **Fundamental Rule:** Always specify bounds `L { ... } U` on your choice rules unless you explicitly intend to allow an arbitrary number of choices.
-
-#### Anti-Pattern: Unbounded Choice for Relationships
-
-This mistake was observed in a Metroidvania map generation task where the goal was to create at most one connection between any two rooms.
-
-**The Code:**
-```asp
-% For each room pair, choose a requirement for a connection
-{ conn(R1, R2, Req) : requirement(Req) } :- room_pair(R1, R2).
-```
-
-**The Problem:**
-This rule allows the solver to generate **multiple** connections between the same two rooms, e.g., `conn(r1,r2,"null")` and `conn(r1,r2,"RedKey")` simultaneously. This is logically incorrect for the problem and creates a combinatorial explosion in the search space, often leading to `grounding stopped` errors or timeouts.
-
-#### Correct Pattern: Bounded Choice for Unique Relationships
-
-By adding bounds, you enforce the intended logic directly and efficiently.
-
-**The Code:**
-```asp
-% For each room pair, choose AT MOST ONE requirement for a connection
-0 { conn(R1, R2, Req) : requirement(Req) } 1 :- room_pair(R1, R2).
-```
-
-**The Solution:**
-This rule correctly states: "For any pair of rooms (R1, R2), choose **zero or one** requirement for a connection." This enforces the intended unique relationship, drastically reduces the search space, and prevents logical errors.
+While Section 5.1 focuses on filtering the *domain* of a choice rule, bounds `L { ... } U` control the *number* of atoms chosen from it: an unbounded choice `{ ... }` allows any number, so add bounds when the specification fixes the number (exactly one, at most one, exactly `k`), and leave the choice unbounded when the specification allows several.
 
 #### General Patterns for Cardinality Control
 
@@ -1187,7 +1018,7 @@ This rule correctly states: "For any pair of rooms (R1, R2), choose **zero or on
 | **Select a fixed number of items**     | `k { selected(I) : item(I) } k :- ...`                              | **Exactly `k`** items must be selected from the domain. |
 | **Select a minimum number of items**   | `k { selected(I) : item(I) } :- ...`                                | **At least `k`** items must be selected.               |
 
-### 5.3 Avoiding Grounding Explosion: Decompose Complex Arithmetic (Anti-Pattern: Monolithic Arithmetic)
+### 5.4 Avoiding Grounding Explosion: Decompose Complex Arithmetic (Anti-Pattern: Monolithic Arithmetic)
 
 Writing a single, large arithmetic constraint that involves many independent variables can cause a "grounding explosion." The grounder must instantiate the rule for every possible combination of values for those variables.
 
