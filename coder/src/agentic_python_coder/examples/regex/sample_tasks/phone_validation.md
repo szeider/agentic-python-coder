@@ -4,8 +4,8 @@
 Validate and extract US phone numbers from text, normalizing them to a standard format.
 
 ## Input
+No input file is provided: the program contains this text as a string.
 ```
-text.txt:
 Call us at (555) 123-4567 or 555.987.6543 for assistance.
 Alternative numbers: 555-444-3333, 1-800-555-1212.
 International: +1 555 888 9999

@@ -1,11 +1,11 @@
 # Email Extraction Task
 
 ## Task
-Extract all email addresses from the given text file and return them as a list.
+Extract all email addresses from the given text and return them as a list.
 
 ## Input
+No input file is provided: the program contains this text as a string.
 ```
-text.txt:
 Hello, you can reach me at john.doe@example.com or jane_smith@company.co.uk.
 For urgent matters, contact support@help-desk.org or admin+filters@subdomain.example.net.
 Invalid emails like @example.com or user@ should not be matched.

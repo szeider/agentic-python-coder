@@ -103,7 +103,7 @@ def parse_args():
     parser.add_argument(
         "task_input",
         nargs="?",
-        help="Task for the coder (inline task or reads from task.md if not provided)",
+        help="Task text (ignored if --task is given; required unless --task or -i)",
     )
 
     parser.add_argument(

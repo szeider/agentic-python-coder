@@ -13,14 +13,19 @@ Answer Set Programming is a declarative programming paradigm for solving complex
 
 ## Usage
 
+Run these commands from the directory where `coder --init` was run (it creates `coder-examples/clingo/`). A task file `<task>.md` writes its solution to `<task>_code.py` in the current directory, an inline task to `solution.py`.
+
 ```bash
-# Basic usage with clingo
-coder --with clingo --project examples/clingo/clingo.md \
+# Copy the template and sample tasks to coder-examples/clingo/
+coder --init clingo
+
+# Inline task
+coder --with clingo --project coder-examples/clingo/clingo.md \
   "Solve the 4-queens problem"
 
 # With a task file
-coder --with clingo --project examples/clingo/clingo.md \
-  --task examples/clingo/sample_tasks/bird_reasoning.md
+coder --with clingo --project coder-examples/clingo/clingo.md \
+  --task coder-examples/clingo/sample_tasks/bird_reasoning.md
 ```
 
 ## Sample Problems

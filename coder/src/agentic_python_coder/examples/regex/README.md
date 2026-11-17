@@ -4,16 +4,20 @@ Text processing examples using Python regular expressions.
 
 ## Quick Start
 
+Run these commands from the directory where `coder --init` was run (it creates `coder-examples/regex/`). The solution is written to `<task>_code.py` in the current directory. The tasks need only Python's `re` module, so no `--with` is needed.
+
 ```bash
+# Copy the template and sample tasks to coder-examples/regex/
+coder --init regex
+
 # Extract emails from text
-cd sample_tasks
-coder --project ../regex.md email_extraction.md
+coder --project coder-examples/regex/regex.md --task coder-examples/regex/sample_tasks/email_extraction.md
 
 # Validate phone numbers
-coder --project ../regex.md phone_validation.md
+coder --project coder-examples/regex/regex.md --task coder-examples/regex/sample_tasks/phone_validation.md
 
 # Parse URLs
-coder --project ../regex.md url_parsing.md
+coder --project coder-examples/regex/regex.md --task coder-examples/regex/sample_tasks/url_parsing.md
 ```
 
 ## What's Included
@@ -44,7 +48,7 @@ Example:
 Extract product codes like: EL-1234-AB (2-4 letters, 4 digits, 2 letters)
 
 ## Input
-inventory.txt with lines like:
+The program contains these lines:
 - "Widget A (EL-1234-AB) - In stock"
 
 ## Output
@@ -53,7 +57,7 @@ List of codes: ['EL-1234-AB']
 
 Then run:
 ```bash
-coder --project regex.md your_task.md
+coder --project coder-examples/regex/regex.md --task your_task.md
 ```
 
 ## Common Patterns

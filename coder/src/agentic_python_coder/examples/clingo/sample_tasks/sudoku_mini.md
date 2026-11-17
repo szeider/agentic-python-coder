@@ -17,12 +17,14 @@ Output format (JSON):
 ```json
 {
   "solution": [
-    [1, 2, 3, 4],
-    [4, 3, 1, 2],
-    [3, 4, 2, 1],
-    [2, 1, 4, 3]
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0]
   ]
 }
 ```
+
+(The zeros are placeholders; each entry of the answer is a number from 1 to 4.)
 
 Note: The solution should be a 4x4 array where solution[row-1][col-1] gives the number at position (row, col).

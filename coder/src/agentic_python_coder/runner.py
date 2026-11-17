@@ -169,7 +169,7 @@ def solve_task(
     Args:
         task: The task description/instructions
         working_directory: Directory for file operations (default: current dir)
-        model: Model name or alias (default: claude-sonnet-4.5)
+        model: Model name or alias (default: sonnet55)
         system_prompt: Custom system prompt as string (takes precedence over path)
         system_prompt_path: Path to system prompt file
         project_prompt: Project-specific context/examples

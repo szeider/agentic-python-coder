@@ -219,4 +219,9 @@ def get_openrouter_llm(
     if "reasoning" in config:
         api_params.setdefault("extra_body", {})["reasoning"] = config["reasoning"]
 
+    # Top-level reasoning_effort (e.g. OpenAI Chat Completions); not a
+    # sampling parameter, so sent also with no_sampling_params
+    if "reasoning_effort" in config:
+        api_params["reasoning_effort"] = config["reasoning_effort"]
+
     return LLMConfig(client=client, model=model_id, api_params=api_params)
