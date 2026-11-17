@@ -18,13 +18,13 @@ magic_constant = n * (n² + 1) / 2
 Return a 2D array representing the magic square.
 
 ## Example
-For n=3, one solution is:
+For n=3, the output has this shape (placeholder letters stand for the numbers 1 to 9):
 ```
-2 7 6
-9 5 1
-4 3 8
+a b c
+d e f
+g h i
 ```
-Each row, column, and diagonal sums to 15.
+Each row, column, and diagonal must sum to 15.
 
 ## Constraints
 - Use CPMPy for constraint modeling

@@ -4,20 +4,20 @@ Constraint programming examples using CPMpy for solving combinatorial problems.
 
 ## Quick Start
 
+Run these commands from the directory where `coder --init` was run (it creates `coder-examples/cpmpy/`). The solution is written to `<task>_code.py` in the current directory.
+
 ```bash
-# Recommended: Use --with flag (no installation needed)
-coder --with cpmpy --project cpmpy.md n_queens.md
+# Copy the template and sample tasks to coder-examples/cpmpy/
+coder --init cpmpy
 
-# Alternative: Install CPMpy manually first
-uv pip install cpmpy
-
-# Then solve N-Queens problem
-cd sample_problems
-coder --project ../cpmpy.md n_queens.md
+# Solve N-Queens
+coder --with cpmpy --project coder-examples/cpmpy/cpmpy.md --task coder-examples/cpmpy/sample_tasks/n_queens.md
 
 # Solve Magic Square
-coder --project ../cpmpy.md magic_square.md
+coder --with cpmpy --project coder-examples/cpmpy/cpmpy.md --task coder-examples/cpmpy/sample_tasks/magic_square.md
 ```
+
+`--with cpmpy` starts the kernel in its own environment with CPMpy (uv installs it on first use). Without `--with`, the kernel runs the tool's own Python and sees only the tool's environment, so CPMpy installed elsewhere with `uv pip install` is not available to it.
 
 ## What's Included
 
@@ -60,7 +60,7 @@ Completed grid
 
 Then run:
 ```bash
-coder --project cpmpy.md your_problem.md
+coder --with cpmpy --project coder-examples/cpmpy/cpmpy.md --task your_problem.md
 ```
 
 ## Resources

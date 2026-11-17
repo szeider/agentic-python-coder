@@ -28,24 +28,28 @@ Find the minimal set of components that must be faulty to explain the observatio
 
 ## Expected Output
 
+Format (placeholder values):
+
 ```json
 {
   "diagnoses": [
     {
-      "faulty_components": ["AND2"],
-      "explanation": "AND2 is faulty, producing 0 instead of 1, which explains Y=0 and propagates to Q=0"
+      "faulty_components": ["GATE", "..."],
+      "explanation": "why these faults explain the observations"
     }
   ],
-  "num_faults": 1,
+  "num_faults": 0,
   "verification": {
-    "X": {"expected": 1, "with_fault": 1, "ok": true},
-    "Y": {"expected": 1, "with_fault": 0, "ok": true},
+    "X": {"expected": 0, "with_fault": 0, "ok": true},
+    "Y": {"expected": 0, "with_fault": 0, "ok": true},
     "Z": {"expected": 0, "with_fault": 0, "ok": true},
-    "P": {"expected": 1, "with_fault": 1, "ok": true},
-    "Q": {"expected": 1, "with_fault": 0, "ok": true}
+    "P": {"expected": 0, "with_fault": 0, "ok": true},
+    "Q": {"expected": 0, "with_fault": 0, "ok": true}
   }
 }
 ```
+
+`"ok"` is true when the value computed with the diagnosed faults (`"with_fault"`) equals the observed value.
 
 ## Why This Showcases ASP
 

@@ -1,8 +1,8 @@
 # Changelog
 
-## 4.0.0 (unreleased; release candidates 4.0.0rc1, 4.0.0rc2 and 4.0.0rc3 published 2026-11-15)
+## 4.0.0 (2026-11-17)
 
-Kernel server (`ipython_mcp`): new kernel-id semantics. Tool names, parameter names and types, and existing result keys are unchanged; the Python API (`create_kernel`, `restart_kernel`, ...) keeps its signatures, and `create_kernel(None)` still returns an 8-hex id. The agent side (`coder`, `solve_task`) is unchanged except for the package isolation below.
+Kernel server (`ipython_mcp`): new kernel-id semantics. Tool names, parameter names and types, and existing result keys are unchanged; the Python API (`create_kernel`, `restart_kernel`, ...) keeps its signatures, and `create_kernel(None)` still returns an 8-hex id. The agent side (`coder`, `solve_task`) is unchanged except for the package isolation below and the new model JSON field `reasoning_effort`.
 
 ### Breaking
 
@@ -38,6 +38,18 @@ Kernel server (`ipython_mcp`): new kernel-id semantics. Tool names, parameter na
 - Tests: the package-isolation tests build their own marker virtual environment and a `UV_ENV_FILE` that sets `PYTHONPATH`, so each of `--isolated`, `--no-env-file` and the removal of `PYTHONPATH` is checked however pytest itself runs (before, two of them could pass without exercising the protection, and the cwd-`.venv` test skipped outside a venv).
 - `python_interrupt` description: continue with `python_exec` using the same `kernel_id`.
 - Tool descriptions of `python_reset`, `python_exec` and `python_status` and the README MCP section describe the new semantics.
+
+### Agent and documentation
+
+- Model JSON files accept the field `reasoning_effort` (a string). It is sent as the top-level `reasoning_effort` parameter of `chat.completions.create`, only when present in the file, and also with `no_sampling_params`. Files without it give the same request parameters as before; the bundled models do not set it.
+- README: the custom-endpoint example for OpenAI uses `gpt-6-luna` with `"reasoning_effort": "none"` (OpenAI documents tool calling on Chat Completions for this model with that setting) instead of the deprecated `gpt-4o-mini` with `temperature`; the Ollama example names a placeholder model. The README also gained a table of the bundled model aliases and of the model JSON fields, a rewritten MCP section, the corrected API key lookup order (environment before `~/.config/coder/.env`), and a development section.
+- `coder --help`: the task argument no longer claims that `task.md` is read when no task is given; the `solve_task` docstring names `sonnet55` as the default model.
+
+### Templates
+
+`examples/clingo/clingo.md` and `examples/cpmpy/cpmpy.md` were revised. Passages written around specific benchmark problems and instructions from an old benchmark harness (a 10-second limit, `feedback.md`, writing `solution.py`, replacing the objective by a stated optimal value) were removed. Four incorrect statements about clingo were corrected: `clingo.Control()` without arguments returns one model without an objective and continues to an optimal model with `#minimize`/`#maximize` (it does not enumerate all), and `Control(["1"])` is no longer recommended, since with an objective it stops at a model that need not be optimal (the `on_model` example now keeps the last model instead of appending the atoms of every improving model); safety does not depend on the order of body literals; the order of `#minimize`/`#maximize` statements sets no priorities (only `@` levels do); filtering in the choice rule does not avoid an `UNSATISFIABLE` result, it only shrinks the grounding.
+
+The example READMEs give commands that run from the directory where `coder --init` was run, with the task file passed by `--task`; the sample tasks no longer show their answer in the output format (sudoku, diagnosis, bird reasoning, magic square), and the regex tasks no longer refer to a `text.txt` that is not shipped.
 
 ### Known limits
 

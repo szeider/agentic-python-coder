@@ -28,14 +28,11 @@ The solution should provide:
 - Justification based on the reasoning chain
 - Demonstration of how exceptions override defaults
 
-Format as JSON:
+Format as JSON, one entry per creature (placeholder values):
 ```json
 {
   "creatures": [
-    {"name": "tweety", "type": "bird", "flies": true, "reason": "default - birds fly"},
-    {"name": "opus", "type": "penguin", "flies": false, "reason": "exception - penguins don't fly"},
-    {"name": "speedy", "type": "ostrich", "flies": false, "reason": "exception - ostriches don't fly"},
-    {"name": "eddie", "type": "eagle", "flies": true, "reason": "default - birds fly"}
+    {"name": "creature_name", "type": "kind", "flies": false, "reason": "default or exception that decides it"}
   ]
 }
 ```

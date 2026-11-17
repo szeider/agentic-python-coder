@@ -391,7 +391,8 @@ solution = None
 def on_model(m):
     global solution
     atoms = m.symbols(atoms=True)
-    # Process atoms into solution
+    # Process atoms into solution (with an objective this runs once per
+    # improving model; the last call holds the best model)
     
 result = ctl.solve(on_model=on_model)
 
@@ -404,19 +405,20 @@ else:
 
 ### CRITICAL: Finding One vs. All Solutions (Solver Configuration)
 
-A frequent and critical error is misconfiguring the solver to search for all possible solutions when only one is required. This is a leading cause of timeouts on moderately complex problems. The number of models to find is controlled by the first argument to `clingo.Control()`; without it, clingo stops after one model.
+A frequent and critical error is misconfiguring the solver to search for all possible solutions when only one is required. This is a leading cause of timeouts on moderately complex problems. The number of models to find is controlled by the first argument to `clingo.Control()`; leave it out unless the task asks for all solutions.
 
-> **Fundamental Rule:** If the problem asks for *a* feasible solution, you MUST limit the solver to find only one.
+> **Fundamental Rule:** Use `ctl = clingo.Control()`. Without an objective it stops after the first model; with `#minimize`/`#maximize` it reports a sequence of improving models and the LAST one is optimal when `result.exhausted` is true.
 
-| Configuration                  | Behavior                                                | Use Case                                                                              | Consequence of Misuse                                                                                             |
-| :----------------------------- | :------------------------------------------------------ | :------------------------------------------------------------------------------------ | :---------------------------------------------------------------------------------------------------------------- |
-| `ctl = clingo.Control()` or `ctl = clingo.Control(["1"])`   | **Stops after the first solution (model) is found.**    | **This should be your default for most tasks.** Use when the problem asks for *any* valid solution. | (Safe)                                                                                                            |
-| `ctl = clingo.Control(["0"])` | **Finds all possible solutions.** | Use **only** when the problem explicitly requires enumerating every single valid combination. | **Leads to timeouts.** The solver will continue working long after finding a valid solution, needlessly exploring the entire search space. |
+| Configuration                  | Without an objective                | With `#minimize`/`#maximize`                                                                 | Use                                                                                     |
+| :----------------------------- | :---------------------------------- | :------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------- |
+| `ctl = clingo.Control()`       | **Stops after the first model.**    | **Continues to an optimal model** (take the last model; `result.exhausted` = optimum proven). | **Your default for most tasks.**                                                        |
+| `ctl = clingo.Control(["0"])`  | **Enumerates all models.**          | Same as `Control()`. For ALL optimal models use `["0", "--opt-mode=optN"]` and keep the models with `m.optimality_proven`. | **Only** when the task asks for every solution; otherwise it **leads to timeouts**.     |
+| `ctl = clingo.Control(["1"])`  | Same as `Control()`.                | **Stops at the first model, which need not be optimal** (clingo warns "optimality of last model not guaranteed"). | **Never together with an objective.**                                                   |
 
 **Example from a Failed Task (Bin Packing):**
 - **The Goal:** Find one valid way to pack bins.
 - **The Mistake:** `ctl = clingo.Control(["0"])` was used. The solver found a valid packing quickly but then continued searching for all other possible valid packings, eventually timing out.
-- **The Fix:** Changing the call to `ctl = clingo.Control(["1"])` (or `clingo.Control()`, which also stops at one model) allows the program to terminate immediately after the first valid model is found, solving the problem well within the time limit.
+- **The Fix:** Changing the call to `ctl = clingo.Control()` (no objective, so it stops at one model) allows the program to terminate immediately after the first valid model is found, solving the problem well within the time limit.
 
 ### The Three-Step Action Modeling Pattern (CRITICAL for temporal problems)
 
@@ -496,11 +498,11 @@ atoms = saved.symbols(atoms=True)    # use-after-free -> SIGSEGV, no traceback
 # CORRECT - extract inside the callback:
 result = []
 def on_model(m):
-    for a in m.symbols(atoms=True):
-        if a.match("assigned", 2):
-            result.append((str(a.arguments[0]), str(a.arguments[1])))
+    # replace, do not append: with an objective, every improving model calls this
+    result[:] = [(str(a.arguments[0]), str(a.arguments[1]))
+                 for a in m.symbols(atoms=True) if a.match("assigned", 2)]
 ctl.solve(on_model=on_model)
-# work with the plain tuples in result
+# work with the plain tuples in result (the last, best model)
 ```
 
 This also applies to verification: snapshot the atoms into plain Python inside

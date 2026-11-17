@@ -4,8 +4,8 @@
 Parse URLs from text and extract their components (protocol, domain, path, query parameters).
 
 ## Input
+No input file is provided: the program contains this text as a string.
 ```
-text.txt:
 Visit our website at https://www.example.com/products?category=electronics&sort=price
 Documentation: http://docs.api-service.io/v2/guide#section-auth
 GitHub repo: https://github.com/user/project
