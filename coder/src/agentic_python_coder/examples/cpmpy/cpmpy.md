@@ -57,8 +57,8 @@ else:
 ## Output Format Rules
 - Follow the output JSON format specification EXACTLY — do not invent alternative encodings
 - If a field is described as nested arrays, output nested arrays (e.g., `[[1,2],[3,4]]`), never compress to single integers
-- If the narrative text conflicts with the explicit "Output format" block, the Output format block wins
-- If the narrative mentions optional variants or extensions of the problem ("one extension is...", "another version..."), solve the base problem as specified by the input data and the Output format block — do not output an extended variant unless the output spec explicitly requires it
+- Reconcile the task text with the output specification before modeling
+- If they conflict, or the task mentions variants or extensions of the problem, solve the problem that the output specification describes and state the assumption in a code comment or your final message
 - Derive every output array's dimensions from parameters stated in the problem and from the axis names in the format spec: `result[a][b]` means outer axis `a` and inner axis `b` — never swap axes or substitute a different quantity
 - Check array dimensions and value ranges match the spec before saving
 
@@ -69,16 +69,17 @@ CPMpy models can easily contain subtle logic bugs. Before saving, you MUST:
 1. **Solve and extract** the solution values
 2. **Write a `verify()` function** that checks every constraint from the problem statement using plain Python loops and asserts — independent of your CPMpy model:
    ```python
-   def verify(result):
-       # Check array shapes — sizes re-derived from the problem text,
-       # NOT from variables your model introduced
-       assert len(result["schedule"]) == n_weeks
+   def verify(result, sizes, capacities):
+       # sizes, capacities: the problem data, NOT variables of your model
+       bins = result["assignment"]  # bins[i] = bin of item i (output spec)
+       assert len(bins) == len(sizes), "every item assigned exactly once"
+       assert all(0 <= b < len(capacities) for b in bins), "bin out of range"
        # Check each constraint with plain Python
-       for w in range(n_weeks):
-           teams_this_week = [result["schedule"][w][p] for p in range(n_periods)]
-           assert len(set(teams_this_week)) == len(teams_this_week), "Duplicate team in week"
+       for b, cap in enumerate(capacities):
+           load = sum(s for s, a in zip(sizes, bins) if a == b)
+           assert load <= cap, f"bin {b} over capacity"
        # ... check ALL constraints from the problem statement
-       print("All checks passed")
+       # No print here: a failed assert raises, stdout is for the JSON
    ```
 
    The verifier must be derived from the problem text alone: re-read the problem
@@ -87,7 +88,7 @@ CPMpy models can easily contain subtle logic bugs. Before saving, you MUST:
    your model introduced — `assert len(x) == my_total` proves nothing if `my_total`
    encodes a misreading. If your model and your verifier share an assumption, a
    wrong assumption passes silently.
-3. **Execute the verification** via python_exec and confirm it passes
+3. **Execute the verification** via python_exec and confirm it passes (diagnostic prints are fine while developing; the saved code prints only the JSON)
 4. **For optimization**: verify optimality by re-solving with a stricter bound:
    ```python
    model2 = Model(model.constraints)
