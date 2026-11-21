@@ -117,7 +117,9 @@ is_in_france(X) :- city(X), X == "paris".
 
 ### MANDATORY RULE: Variable Safety
 
-**FUNDAMENTAL RULE**: Every variable appearing in a rule MUST be grounded by appearing in at least one positive, non-aggregate, non-arithmetic literal in the rule's body.
+**FUNDAMENTAL RULE**: Every variable appearing in a rule MUST be grounded by appearing in at least one positive, non-aggregate, non-arithmetic literal in the rule's body, or be assigned from bound variables (`K = #sum { ... }`, `Y = X+1`).
+
+This concerns the rule's global variables. A variable local to a conditional literal or an aggregate element (`{ a(X) : b(X) }`, `#count { X : p(X) }`) is bound by the condition inside that element; such a local binding does not bind a global variable of the same name elsewhere in the rule (`h(X) :- #count { X : p(X) } > 0.` is unsafe).
 
 **Why this matters**: ASP needs to know which values to check. Unsafe variables have no defined domain.
 
@@ -194,17 +196,18 @@ Variables appearing in the choice head but nowhere else are UNSAFE.
 {pair(Group, P1, P2)} :- group(Group).
 
 % SAFE
-{pair(Group, P1, P2) : member(P1), member(P2)} :- group(Group), P1 != P2.
+{pair(Group, P1, P2) : member(P1), member(P2), P1 != P2} :- group(Group).
 ```
 
 ### MANDATORY RULE: Aggregate Placement
 
-**Aggregates (#count, #sum, #min, #max) can ONLY be used:**
+**Aggregates (#count, #sum, #min, #max) are used:**
 - In the BODY of a rule (for conditions)
 - In #minimize/#maximize statements
-- NEVER in the HEAD of a regular rule
+- As a whole rule head, in the form of choice and cardinality heads (`1 { a(X) : b(X) } 2 :- c.` or `#count { X : a(X) : b(X) } = 1 :- c.`)
+- NEVER as an argument of a head atom, as in `total(#sum{...})`
 
-**Why**: Rule heads generate new facts, while aggregates compute over existing facts.
+**Why**: An atom's arguments are terms, and an aggregate is not a term; compute the value in the body and pass the variable.
 
 ```asp
 % CORRECT - Aggregate in constraint body
@@ -213,7 +216,7 @@ Variables appearing in the choice head but nowhere else are UNSAFE.
 % CORRECT - Aggregate in optimization
 #minimize { Cost,X : selected(X), cost(X,Cost) }.
 
-% INCORRECT - Cannot use aggregate in rule head
+% INCORRECT - An aggregate cannot be an argument of a head atom
 % total(#sum{C,X : cost(X,C)}) :- ...  % SYNTAX ERROR!
 
 % CORRECT - Use auxiliary predicates instead
@@ -286,6 +289,18 @@ Use comments in your code to indicate which task you're working on:
 - Convert to required JSON format
 - Verify solution satisfies constraints
 - Handle UNSAT cases gracefully
+- **Proof status after an early stop**: a program that stops the solver before it finishes (time limit, cancel, solution or conflict limit) reads the solver's proof status and reports a result as optimal, or the problem as unsatisfiable, only if the solver proved it. Otherwise the output says so: the error JSON carries the reason (for example `{"error": "No solution found", "reason": "search stopped before UNSAT was proven"}`), or a solution is output together with the status field if the output format has one, and the final answer states that optimality or unsatisfiability was not proven. In clingo:
+  - `result.exhausted` means the configured search ran to its end. UNSAT is proven when `result.unsatisfiable` is True (under the assumptions and bounds of that solve).
+  - With the default optimization mode, the last model is proven optimal when the result is satisfiable and `exhausted` is True; under `--opt-mode=optN`, read `m.optimality_proven` on the model inside `on_model`.
+  - A solve cancelled by `handle.cancel()` has `interrupted` True; a stop by a model limit (`Control(["1"])`, `--models=1`) has neither `exhausted` nor `interrupted` set, so "not interrupted" is no proof.
+  - A time limit is an async solve; `ctl.solve()` without a limit returns only when finished:
+    ```python
+    with ctl.solve(async_=True, on_model=on_model) as handle:
+        finished = handle.wait(t)   # t seconds
+        if not finished:
+            handle.cancel()
+        result = handle.get()
+    ```
 
 ### When to Report Issues
 
@@ -339,7 +354,7 @@ NOT for your own logic errors or debugging.
 **Weak Constraints (`:~`)**: Define what is UNDESIRABLE  
 ```asp
 % These guide optimization without eliminating solutions
-:~ delayed(Task). [1@2]        % Prefer on-time, priority 2
+:~ delayed(Task). [1@2,Task]   % Prefer on-time, priority 2 (Task in the tuple: each delayed task counts)
 :~ cost(C). [C@1]              % Minimize cost, priority 1
 ```
 
@@ -411,14 +426,9 @@ A frequent and critical error is misconfiguring the solver to search for all pos
 
 | Configuration                  | Without an objective                | With `#minimize`/`#maximize`                                                                 | Use                                                                                     |
 | :----------------------------- | :---------------------------------- | :------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------- |
-| `ctl = clingo.Control()`       | **Stops after the first model.**    | **Continues to an optimal model** (take the last model; `result.exhausted` = optimum proven). | **Your default for most tasks.**                                                        |
+| `ctl = clingo.Control()`       | **Stops after the first model.**    | **Continues to an optimal model** (take the last model; `result.exhausted` = optimum proven; after an early stop see "Proof status" in Step 4 of the workflow). | **Your default for most tasks.**                                                        |
 | `ctl = clingo.Control(["0"])`  | **Enumerates all models.**          | Same as `Control()`. For ALL optimal models use `["0", "--opt-mode=optN"]` and keep the models with `m.optimality_proven`. | **Only** when the task asks for every solution; otherwise it **leads to timeouts**.     |
 | `ctl = clingo.Control(["1"])`  | Same as `Control()`.                | **Stops at the first model, which need not be optimal** (clingo warns "optimality of last model not guaranteed"). | **Never together with an objective.**                                                   |
-
-**Example from a Failed Task (Bin Packing):**
-- **The Goal:** Find one valid way to pack bins.
-- **The Mistake:** `ctl = clingo.Control(["0"])` was used. The solver found a valid packing quickly but then continued searching for all other possible valid packings, eventually timing out.
-- **The Fix:** Changing the call to `ctl = clingo.Control()` (no objective, so it stops at one model) allows the program to terminate immediately after the first valid model is found, solving the problem well within the time limit.
 
 ### The Three-Step Action Modeling Pattern (CRITICAL for temporal problems)
 
@@ -582,7 +592,7 @@ carrying(R,I,T+1) :- carrying(R,I,T), time(T+1),
 1 { assigned(T,W) : worker(W) } 1 :- task(T).
 
 % Worker capacity constraint
-:- worker(W), #count { T : assigned(T,W) } > capacity(W).
+:- worker(W), capacity(W,C), #count { T : assigned(T,W) } > C.
 ```
 
 ### 4.3 Graph Problems
@@ -754,7 +764,7 @@ This is the most common mistake in planning problems:
 { move(D, P1, P2, T) : peg(P1), peg(P2), P1 != P2 } 1 :- disk(D), time(T), T < max_time.
 
 % Then uses slow global constraint to force total count
-:- #count { D, P1, P2, T : move(D, P1, P2, T) } != 19.
+:- #count { D, P1, P2, T : move(D, P1, P2, T) } != max_time.
 ```
 
 **Why this is catastrophically slow:**
@@ -773,16 +783,17 @@ The key principles:
 **Complete Tower of Hanoi Example:**
 
 ```asp
-#const max_time = 19.
-disk(1..4). peg(a;b;c;d).
-time(0..max_time-1).  % Action timesteps (0..18 for 19 moves)
+#const max_time = 7.
+disk(1..3). peg(a;b;c).
+time(0..max_time-1).  % Action timesteps (0..6 for 7 moves)
 
 % INITIAL STATE
-on_peg(1,a,0). on_peg(2,a,0). on_peg(3,a,0). on_peg(4,a,0).
+on_peg(1,a,0). on_peg(2,a,0). on_peg(3,a,0).
 
 % --- 1. DEFINE WHAT CAN BE MOVED ---
 % A disk is "top" if no smaller disk is on the same peg
-top(D, P, T) :- on_peg(D, P, T), not on_peg(D2, P, T), D2 < D.
+top(D, P, T) :- on_peg(D, P, T), not covered(D, P, T).
+covered(D, P, T) :- on_peg(D, P, T), on_peg(D2, P, T), D2 < D.
 
 % --- 2. CHOOSE EXACTLY ONE VALID MOVE PER TIMESTEP ---
 % At each time T, move exactly one top disk to a different peg
@@ -798,21 +809,15 @@ on_peg(D, P2, T+1) :- move(D, _, P2, T).
 
 % --- 5. FRAME AXIOMS ---
 % Disks not moved stay on their peg
-on_peg(D, P, T+1) :- on_peg(D, P, T), time(T+1), not move(D, P, _, T).
+on_peg(D, P, T+1) :- on_peg(D, P, T), T < max_time, not move(D, P, _, T).
 
 % --- 6. STATE EXCLUSIVITY ---
 % Disk cannot be on two pegs
 :- on_peg(D, P1, T), on_peg(D, P2, T), P1 != P2.
 
-% --- 7. DOMAIN-SPECIFIC CONSTRAINTS ---
-% Pilgrim's journey: every disk must visit both B and C
-visited(D, P) :- move(D, _, P, _).
-:- disk(D), not visited(D, b).
-:- disk(D), not visited(D, c).
-
-% --- 8. GOAL ---
-% All disks on peg D at final timestep
-:- disk(D), not on_peg(D, d, max_time).
+% --- 7. GOAL ---
+% All disks on peg c at final timestep
+:- disk(D), not on_peg(D, c, max_time).
 ```
 
 **Why this is fast:**
@@ -832,8 +837,8 @@ visited(D, P) :- move(D, _, P, _).
 
 ```asp
 % Define what can be moved
-clear(B,T) :- block(B), not on(_, B, T).
-on_table_space(T) :- #count { B : on_table(B,T) } < max_table_slots.
+clear(B,T) :- block(B), time(T), not on(_, B, T).
+on_table_space(T) :- time(T), #count { B : on_table(B,T) } < max_table_slots.
 
 % Exactly one move per timestep
 1 { move_to_block(B1, B2, T) : clear(B1,T), clear(B2,T), B1 != B2 ;
@@ -888,6 +893,46 @@ Define `open/3` from the task's progression rule, then constrain `first/2` as th
 repeatedly add everything currently accessible, one step at a time, and check the
 required ordering of first-access steps against the problem text — do not reuse
 your encoding's ordering predicates in the verifier.
+
+### 4.12 State-Dependent Reachability (Abilities That Grow Along a Walk)
+
+**Critical for**: one agent on directed edges where an edge needs something picked up or done earlier on the same walk (keys, tools, switches). This section asks whether some single walk enters a node; for the step at which each element first becomes accessible under a stated progression rule, see 4.11.
+
+**ANTI-PATTERN: the pooled fixpoint** `reach(Y) :- reach(X), edge(X,Y,I), has(I).` with `has(I)` true once the node holding `I` is reached. It uses every collected item at every reached node, so the set may contain nodes no walk enters: after a one-way edge into a dead end that holds the key, the key still opens edges at the start. A sufficient condition for soundness is that every edge X->Y has a reverse edge Y->X needing no item beyond what X->Y needs; without such an argument, use the state model.
+
+**CORRECT PATTERN: reachability over states (node, items held).** A node is reachable if some single walk from the start enters it. Give each item its own bit; a mask is the set held:
+
+```asp
+% item(I,V): V = 1,2,4,... one bit per item. at(I,N): item I lies at node N.
+% edge(X,Y,R): X->Y needs every item in mask R (0 = none). start(S). node(N).
+gain(N,K) :- node(N), K = #sum { V,I : at(I,N), item(I,V) }.
+st(S,K) :- start(S), gain(S,K).
+st(Y,M?K) :- st(X,M), edge(X,Y,R), M & R = R, gain(Y,K).   % ? = bitwise or
+reachable(N) :- st(N,_).
+```
+
+Example: `edge(s,a,0). edge(a,b,0). edge(s,c,1).`, the only item at `b`: the pooled fixpoint reaches `c`, this model does not; with `edge(b,s,0)` both reach all nodes.
+
+**Choosing the bound.** On fixed data the grounder computes this model without horizon or search, at most |nodes| * 2^k states for k items. Use at most 31 items (bit values up to 2^30): clingo integers are 32-bit and wrap silently, so 2^32 becomes 0 and its edge needs nothing. Prefer this model to decide which nodes are reachable, and a time-indexed walk (`at(N,T)`, `holds(I,T)`, as in 4.5 and 4.9) when the walk is the answer (a route, fewest moves); a walk proves reachable only the nodes it enters. For consumables (single-use keys, fuel) the state holds the remaining quantities and, for pickups that do not respawn, whether each is still there.
+
+**In a generator** (layout guessed, every node reachable), add `:- node(N), not reachable(N).` No saturation is needed: `st/2` is positive recursion, so each answer set holds exactly the reachable states of its layout, and constraints may require or forbid reachability. The grounder then grounds every mask the candidate edges allow: keep k small.
+
+**Verification**: the plain-Python verifier simulates the walk over (node, items held), not the pooled fixpoint:
+
+```python
+def walk_reach(start, edges, items_at):  # edges: (x, y, frozenset needed)
+    s0 = (start, frozenset(items_at.get(start, ())))
+    seen, todo = {s0}, [s0]
+    while todo:
+        x, held = todo.pop()
+        for a, y, need in edges:
+            if a == x and need <= held:
+                s = (y, held | frozenset(items_at.get(y, ())))
+                if s not in seen:
+                    seen.add(s)
+                    todo.append(s)
+    return {n for n, _ in seen}
+```
 
 ## Section 5: Debugging & Advanced Techniques
 
@@ -1051,8 +1096,8 @@ var(a;b;c;d). value(1..10).
 1 { assign(V, N) : value(N) } 1 :- var(V).
 
 % GOOD PATTERN: Use #sum to calculate intermediate values.
-sum_ab(S) :- S = #sum { N,V : assign(V,N), (V=a; V=b) }.
-sum_cd(S) :- S = #sum { N,V : assign(V,N), (V=c; V=d) }.
+sum_ab(S) :- S = #sum { N,V : assign(V,N), V=(a;b) }.
+sum_cd(S) :- S = #sum { N,V : assign(V,N), V=(c;d) }.
 
 % Now, constrain the two resulting sums. This generates very few ground rules.
 :- sum_ab(S1), sum_cd(S2), S1 != S2.
@@ -1083,11 +1128,11 @@ sum_cd(S) :- S = #sum { N,V : assign(V,N), (V=c; V=d) }.
 
 4. **Use clingo's debugging features**
    ```python
-   # Show grounded rules
+   # Show ground atoms
    ctl.ground([("base", [])])
    for atom in ctl.symbolic_atoms:
-       if "item_at" in str(atom):
-           print(atom)
+       if "item_at" in str(atom.symbol):
+           print(atom.symbol)
    ```
 
 ### Common Errors and Solutions
