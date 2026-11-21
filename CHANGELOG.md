@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.0.1 (2026-11-21)
+
+Templates only (`examples/clingo/clingo.md`, `examples/cpmpy/cpmpy.md`); no code change.
+
+- Both templates: a program that stops the solver early reports "optimal" or "unsatisfiable" only on the solver's proof status. clingo: `result.unsatisfiable`, `result.exhausted`, `model.optimality_proven` under `optN`, with the async sequence `wait` / `cancel` / `get`; a stop at a model limit sets neither `exhausted` nor `interrupted`. CPMpy: `ExitStatus`, read after `solve()`; `solve()` returning False can mean `UNKNOWN`.
+- clingo.md: the safety rule allows a variable assigned from bound variables and names local variables of conditional literals and aggregate elements; the aggregate-placement rule no longer forbids head aggregates; new section 4.12 on state-dependent reachability.
+- clingo.md, corrected snippets: a capacity constraint that could not fire, unsafe variables in the Hanoi, blocks-world and pairing examples, a parse error in a sum over two values, a weak constraint that counted all delayed tasks once, `atom.symbol` in the debugging example, the Hanoi frame axiom at the last time step.
+- clingo.md: the Hanoi example is the standard 3-disk puzzle; a variant with fixed sizes and a "failed task" example are removed.
+- cpmpy.md: the optimality check by re-solving with a stricter bound is replaced by the exit status (it passed without a proof under a time limit). Corrected: `InDomain` needs no separate import; element indexing needs a variable array or `cpm_array`, not a Python list. Added: `num_workers=1` for reproducible runs, the UNSAT form, what to do when the model reports no solution, a reachability pitfall.
+
 ## 4.0.0 (2026-11-17)
 
 Kernel server (`ipython_mcp`): new kernel-id semantics. Tool names, parameter names and types, and existing result keys are unchanged; the Python API (`create_kernel`, `restart_kernel`, ...) keeps its signatures, and `create_kernel(None)` still returns an 8-hex id. The agent side (`coder`, `solve_task`) is unchanged except for the package isolation below and the new model JSON field `reasoning_effort`.
